@@ -312,12 +312,7 @@ jobs:
             -e "s|@LINUX_ARM64_SHA256@|$linux_arm64|g" \
             -e "s|@LINUX_X64_SHA256@|$linux_x64|g" \
             source/packaging/homebrew/a365dt.rb > tap/Formula/a365dt.rb
-      - name: Test formula
-        run: |
-          ruby -c tap/Formula/a365dt.rb
-          brew install --formula "$PWD/tap/Formula/a365dt.rb"
-          brew test a365dt
-      - name: Commit formula
+      - name: Prepare formula commit
         run: |
           git -C tap diff --check
           git -C tap config user.name github-actions[bot]
@@ -328,6 +323,14 @@ jobs:
             exit 0
           fi
           git -C tap commit -m "a365dt $VERSION"
+      - name: Test formula
+        run: |
+          ruby -c tap/Formula/a365dt.rb
+          brew tap Gridness/oosama "$PWD/tap"
+          brew install Gridness/oosama/a365dt
+          brew test Gridness/oosama/a365dt
+      - name: Push formula
+        run: |
           git -C tap push origin main
 
   publish-winget:
