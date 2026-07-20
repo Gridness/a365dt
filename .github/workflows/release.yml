@@ -393,9 +393,9 @@ jobs:
         if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         env:
-          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          ./wingetcreate.exe submit --prtitle "Gridness.a365dt version $env:VERSION" --token $env:RELEASE_PAT --no-open winget
+          ./wingetcreate.exe submit --prtitle "Gridness.a365dt version $env:VERSION" --token $env:WINGET_PAT --no-open winget
           if ($LASTEXITCODE -ne 0) {
             throw "WingetCreate failed with exit code $LASTEXITCODE"
           }
