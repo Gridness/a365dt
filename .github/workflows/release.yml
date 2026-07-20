@@ -1,0 +1,398 @@
+name: Release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  release-pr:
+    name: Update release PR
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.prs_created }}
+      number: ${{ steps.pr.outputs.number }}
+      ref: ${{ steps.pr.outputs.ref }}
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+          skip-github-release: true
+      - name: Read release PR
+        if: steps.release.outputs.prs_created == 'true'
+        id: pr
+        env:
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          echo "number=$(jq -r '.number' <<<"$RELEASE_PR")" >> "$GITHUB_OUTPUT"
+          echo "ref=$(jq -r '.headBranchName' <<<"$RELEASE_PR")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          token: ${{ secrets.RELEASE_PAT }}
+      - name: Update Cargo lockfile
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          cargo check -p a365dt-cli
+          git add Cargo.lock
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "chore: update Cargo.lock"
+          git push
+  validate-release-pr:
+    name: Validate ${{ matrix.target }}
+    needs: release-pr
+    if: needs.release-pr.outputs.created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            test: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            test: false
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            test: false
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            test: false
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            test: false
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-pr.outputs.ref }}
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Test
+        if: matrix.test
+        env:
+          RUST_MIN_STACK: 8388608
+        run: cargo test --locked --no-fail-fast -p a365dt-cli
+      - name: Build
+        run: cargo build --locked --release --bin a365dt --target ${{ matrix.target }}
+      - name: Smoke test
+        if: runner.os != 'Windows'
+        run: target/${{ matrix.target }}/release/a365dt --version
+      - name: Smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: target/${{ matrix.target }}/release/a365dt.exe --version
+  merge-release-pr:
+    name: Merge release PR
+    needs: [release-pr, validate-release-pr]
+    if: >-
+      ${{ always() && needs.release-pr.outputs.created == 'true' &&
+      needs.validate-release-pr.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          PR_NUMBER: ${{ needs.release-pr.outputs.number }}
+        run: gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --admin
+  detect-release:
+    name: Detect version bump
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Read version
+        id: version
+        run: |
+          echo "release=false" >> "$GITHUB_OUTPUT"
+          current="$(jq -r '.["."] // empty' .release-please-manifest.json)"
+          previous=""
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            previous="$(git show HEAD^:.release-please-manifest.json 2>/dev/null | jq -r '.["."] // empty' || true)"
+          fi
+          if [[ -z "$current" || "$current" == "$previous" ]]; then
+            exit 0
+          fi
+          cargo_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "a365dt-cli") | .version')"
+          file_version="$(tr -d '[:space:]' < version.txt)"
+          if ! [[ "$current" == "$cargo_version" && "$current" == "$file_version" ]]; then
+            echo "Release Please ($current), Cargo ($cargo_version), and version.txt ($file_version) differ" >&2
+            exit 1
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+  test-release:
+    name: Test release
+    needs: detect-release
+    if: needs.detect-release.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          RUST_MIN_STACK: 8388608
+        run: cargo test --locked --no-fail-fast -p a365dt-cli
+
+  build-release:
+    name: Build ${{ matrix.target }}
+    needs: detect-release
+    if: needs.detect-release.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.detect-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build
+        run: cargo build --locked --release --bin a365dt --target ${{ matrix.target }}
+      - name: Package
+        if: runner.os != 'Windows'
+        run: |
+          install -d dist/package
+          install -m 755 "target/$TARGET/release/a365dt" dist/package/a365dt
+          install -m 644 LICENSE dist/package/LICENSE
+          tar -C dist/package -czf "dist/a365dt-v$VERSION-$TARGET.tar.gz" a365dt LICENSE
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          Copy-Item "target/$env:TARGET/release/a365dt.exe" dist/package/a365dt.exe
+          Copy-Item LICENSE dist/package/LICENSE
+          Compress-Archive -Path dist/package/* -DestinationPath "dist/a365dt-v$env:VERSION-$env:TARGET.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/a365dt-v*
+          if-no-files-found: error
+
+  publish-github:
+    name: Publish GitHub release
+    needs: [release-pr, detect-release, test-release, build-release]
+    if: >-
+      ${{ needs.detect-release.outputs.release == 'true' &&
+      needs.test-release.result == 'success' &&
+      needs.build-release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+      TAG: v${{ needs.detect-release.outputs.version }}
+    steps:
+      - name: Check for existing release
+        id: existing
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create draft release
+        if: steps.existing.outputs.release != 'true'
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+          skip-github-pull-request: true
+      - name: Verify release
+        run: gh release view "$TAG" --repo "$GITHUB_REPOSITORY"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum a365dt-*.tar.gz a365dt-*.zip > SHA256SUMS
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+      - name: Upload release assets
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Publish release
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+  publish-homebrew:
+    name: Publish Homebrew formula
+    needs: [detect-release, publish-github]
+    if: needs.detect-release.outputs.release == 'true'
+    runs-on: macos-15
+    permissions:
+      actions: read
+      contents: read
+    env:
+      VERSION: ${{ needs.detect-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: source
+      - uses: actions/checkout@v7
+        with:
+          repository: Gridness/homebrew-oosama
+          token: ${{ secrets.RELEASE_PAT }}
+          path: tap
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Generate formula
+        run: |
+          macos_arm64="$(shasum -a 256 "dist/a365dt-v$VERSION-aarch64-apple-darwin.tar.gz" | awk '{print $1}')"
+          linux_arm64="$(shasum -a 256 "dist/a365dt-v$VERSION-aarch64-unknown-linux-musl.tar.gz" | awk '{print $1}')"
+          linux_x64="$(shasum -a 256 "dist/a365dt-v$VERSION-x86_64-unknown-linux-musl.tar.gz" | awk '{print $1}')"
+          mkdir -p tap/Formula
+          sed \
+            -e "s|@REPOSITORY@|$GITHUB_REPOSITORY|g" \
+            -e "s|@VERSION@|$VERSION|g" \
+            -e "s|@MACOS_ARM64_SHA256@|$macos_arm64|g" \
+            -e "s|@LINUX_ARM64_SHA256@|$linux_arm64|g" \
+            -e "s|@LINUX_X64_SHA256@|$linux_x64|g" \
+            source/packaging/homebrew/a365dt.rb > tap/Formula/a365dt.rb
+      - name: Test formula
+        run: |
+          ruby -c tap/Formula/a365dt.rb
+          brew install --formula "$PWD/tap/Formula/a365dt.rb"
+          brew test a365dt
+      - name: Commit formula
+        run: |
+          git -C tap diff --check
+          git -C tap config user.name github-actions[bot]
+          git -C tap config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C tap add Formula/a365dt.rb
+          if git -C tap diff --cached --quiet; then
+            echo "Formula already matches v$VERSION"
+            exit 0
+          fi
+          git -C tap commit -m "a365dt $VERSION"
+          git -C tap push origin main
+
+  publish-winget:
+    name: Submit WinGet package
+    needs: [detect-release, publish-github]
+    if: needs.detect-release.outputs.release == 'true'
+    runs-on: windows-2025
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+      VERSION: ${{ needs.detect-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: source
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*-pc-windows-msvc
+          merge-multiple: true
+          path: dist
+      - name: Generate manifests
+        shell: pwsh
+        run: |
+          $x64 = (Get-FileHash "dist/a365dt-v$env:VERSION-x86_64-pc-windows-msvc.zip" -Algorithm SHA256).Hash
+          $arm64 = (Get-FileHash "dist/a365dt-v$env:VERSION-aarch64-pc-windows-msvc.zip" -Algorithm SHA256).Hash
+          $releaseDate = git -C source show -s --format=%cs HEAD
+          $replacements = [ordered]@{
+            '@REPOSITORY@' = $env:GITHUB_REPOSITORY
+            '@VERSION@' = $env:VERSION
+            '@RELEASE_DATE@' = $releaseDate
+            '@WINDOWS_X64_SHA256@' = $x64
+            '@WINDOWS_ARM64_SHA256@' = $arm64
+          }
+          New-Item -ItemType Directory -Force winget | Out-Null
+          Get-ChildItem source/packaging/winget/*.yaml | ForEach-Object {
+            $content = Get-Content $_.FullName -Raw
+            foreach ($entry in $replacements.GetEnumerator()) {
+              $content = $content.Replace($entry.Key, $entry.Value)
+            }
+            Set-Content "winget/$($_.Name)" $content -Encoding utf8NoBOM
+          }
+      - name: Check existing submission
+        id: existing
+        shell: pwsh
+        run: |
+          gh api "repos/microsoft/winget-pkgs/contents/manifests/g/Gridness/a365dt/$env:VERSION" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "skip=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $open = gh pr list --repo microsoft/winget-pkgs --state open --search "Gridness.a365dt $env:VERSION in:title" --json number --jq 'length'
+          "skip=$($open -ne '0')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+      - name: Download WingetCreate
+        if: steps.existing.outputs.skip != 'true'
+        shell: pwsh
+        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+      - name: Submit manifests
+        if: steps.existing.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          ./wingetcreate.exe submit --prtitle "Gridness.a365dt version $env:VERSION" --token $env:RELEASE_PAT --no-open winget
+          if ($LASTEXITCODE -ne 0) {
+            throw "WingetCreate failed with exit code $LASTEXITCODE"
+          }

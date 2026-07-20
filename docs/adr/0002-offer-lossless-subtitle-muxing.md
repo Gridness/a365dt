@@ -1,0 +1,3 @@
+# Offer lossless subtitle muxing
+
+Anime365 subtitle translations may expose a separate styled ASS file alongside the MP4. a365dt keeps MP4 plus ASS as the default, but when `ffmpeg` is installed it offers one batch-wide option to stream-copy both into an MKV without re-encoding; when `ffmpeg` is unavailable, downloading continues with separate files. After a successful mux, a365dt removes the source MP4 and ASS; after a failed mux, it reports the failure, removes only the incomplete MKV, and preserves both source files. This preserves video quality and subtitle styling while making the container change explicit and failures recoverable.

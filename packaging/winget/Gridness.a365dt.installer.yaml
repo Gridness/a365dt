@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+PackageIdentifier: Gridness.a365dt
+PackageVersion: "@VERSION@"
+InstallerType: zip
+NestedInstallerType: portable
+Commands:
+- a365dt
+ReleaseDate: "@RELEASE_DATE@"
+Installers:
+- Architecture: x64
+  InstallerUrl: "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/a365dt-v@VERSION@-x86_64-pc-windows-msvc.zip"
+  InstallerSha256: "@WINDOWS_X64_SHA256@"
+  NestedInstallerFiles:
+  - RelativeFilePath: a365dt.exe
+    PortableCommandAlias: a365dt
+- Architecture: arm64
+  InstallerUrl: "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/a365dt-v@VERSION@-aarch64-pc-windows-msvc.zip"
+  InstallerSha256: "@WINDOWS_ARM64_SHA256@"
+  NestedInstallerFiles:
+  - RelativeFilePath: a365dt.exe
+    PortableCommandAlias: a365dt
+ManifestType: installer
+ManifestVersion: 1.12.0
