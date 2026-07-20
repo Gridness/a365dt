@@ -9,6 +9,7 @@ use std::{
 };
 
 use clap::Parser;
+use console::style;
 use indicatif::{HumanBytes, HumanDuration};
 use tokio::{fs, process::Command, task::JoinSet};
 
@@ -249,19 +250,36 @@ fn print_summary(
 	};
 	let bytes = summary.outcomes.iter().map(|outcome| outcome.bytes).sum();
 	ui::heading("Batch summary");
-	ui::success(format!(
-		"{} downloaded • {} skipped • {} failed • {} interrupted",
-		count(Status::Downloaded),
-		count(Status::Skipped),
-		count(Status::Failed) + count(Status::MuxFailed),
-		count(Status::Interrupted)
-	));
-	ui::note(format!(
-		"{} • {} • {}",
-		HumanBytes(bytes),
-		HumanDuration(summary.elapsed),
-		directory.display()
-	));
+	ui::grid(&[
+		[
+			style("Downloaded").green().bold().to_string(),
+			count(Status::Downloaded).to_string(),
+		],
+		[
+			style("Skipped").cyan().bold().to_string(),
+			count(Status::Skipped).to_string(),
+		],
+		[
+			style("Failed").red().bold().to_string(),
+			(count(Status::Failed) + count(Status::MuxFailed)).to_string(),
+		],
+		[
+			style("Interrupted").yellow().bold().to_string(),
+			count(Status::Interrupted).to_string(),
+		],
+		[
+			style("Size").bold().to_string(),
+			HumanBytes(bytes).to_string(),
+		],
+		[
+			style("Elapsed").bold().to_string(),
+			HumanDuration(summary.elapsed).to_string(),
+		],
+		[
+			style("Output").bold().to_string(),
+			directory.display().to_string(),
+		],
+	]);
 	for outcome in summary.outcomes.iter().filter(|outcome| {
 		matches!(
 			outcome.status,
