@@ -10,7 +10,7 @@ fn aligns_borderless_columns() {
 	];
 
 	assert_eq!(
-		aligned_rows(&rows),
-		vec!["\x1b[31mOne\x1b[0m     2024  TV", "Twenty  ?     Movie"]
+		aligned_rows(&rows, 18),
+		vec!["\x1b[31mOne\x1b[0m    2024  TV", "Twen…  ?     Movie"]
 	);
 }
