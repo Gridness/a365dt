@@ -1,0 +1,21 @@
+[package]
+name = "a365dt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "a365dt"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+console.workspace = true
+indicatif.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+serde_json.workspace = true

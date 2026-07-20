@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/a365dt-cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# external dependencies
+clap = { version = "4", features = ["derive"] }
+console = "0.16"
+indicatif = "0.18"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+
+# test dependencies
+pretty_assertions = "1"
+serde_json = "1"
+
+[profile.dev]
+opt-level = "z"
+debug = false
+strip = "symbols"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release]
+opt-level = "z"
+strip = "symbols"
+lto = true
+codegen-units = 1
+panic = "abort"
