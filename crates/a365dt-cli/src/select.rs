@@ -49,15 +49,17 @@ pub fn choose_series(series: &[Series]) -> Result<Series, Error> {
 	let rows = series
 		.iter()
 		.map(|item| {
-			format!(
-				"{} • {} • {} • {} episodes",
-				item.title,
+			[
+				item.title.clone(),
 				item.year
 					.map_or_else(|| "?".into(), |year| year.to_string()),
-				item.type_title.as_deref().unwrap_or("Unknown type"),
-				item.number_of_episodes
-					.map_or_else(|| "?".into(), |count| count.to_string())
-			)
+				item.type_title.as_deref().unwrap_or("Unknown type").into(),
+				format!(
+					"{} episodes",
+					item.number_of_episodes
+						.map_or_else(|| "?".into(), |count| count.to_string())
+				),
+			]
 		})
 		.collect::<Vec<_>>();
 	Ok(series[ui::choose("Search results", &rows)?].clone())
@@ -81,9 +83,9 @@ pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 			match ui::choose(
 				"How should a365dt proceed?",
 				&[
-					"Continue with available episodes".into(),
-					"Enter a different range".into(),
-					"Cancel".into(),
+					["Continue with available episodes".into()],
+					["Enter a different range".into()],
+					["Cancel".into()],
 				],
 			)? {
 				1 => continue,
@@ -159,18 +161,19 @@ pub fn choose_track(
 		let rows = tracks
 			.iter()
 			.map(|track| {
-				let text = format!(
-					"{}-{} • {} • {}/{} episodes",
-					track.key.kind,
-					track.key.language,
-					track.key.authors,
-					track.releases.len(),
-					episodes.len()
-				);
+				let row = [
+					format!("{}-{}", track.key.kind, track.key.language),
+					track.key.authors.clone(),
+					format!(
+						"{}/{} episodes",
+						track.releases.len(),
+						episodes.len()
+					),
+				];
 				if track.releases.len() == episodes.len() {
-					text
+					row
 				} else {
-					ui::red(text)
+					row.map(ui::red)
 				}
 			})
 			.collect::<Vec<_>>();
@@ -223,12 +226,14 @@ pub fn choose_resolutions(
 	let rows = available
 		.iter()
 		.map(|(height, count)| {
-			let text =
-				format!("{height}p • {count}/{} episodes", releases.len());
+			let row = [
+				format!("{height}p"),
+				format!("{count}/{} episodes", releases.len()),
+			];
 			if *count == releases.len() {
-				text
+				row
 			} else {
-				ui::red(text)
+				row.map(ui::red)
 			}
 		})
 		.collect::<Vec<_>>();
@@ -253,7 +258,7 @@ pub fn choose_resolutions(
 		}
 		let labels = options
 			.iter()
-			.map(|height| format!("{height}p"))
+			.map(|height| [format!("{height}p")])
 			.collect::<Vec<_>>();
 		let title = format!(
 			"Fallback for episodes {}",

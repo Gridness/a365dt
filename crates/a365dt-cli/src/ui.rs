@@ -3,7 +3,10 @@ use std::{
 	time::Duration,
 };
 
-use console::{Style, set_colors_enabled, set_colors_enabled_stderr, style};
+use console::{
+	Alignment, Style, measure_text_width, pad_str, set_colors_enabled,
+	set_colors_enabled_stderr, style,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::error::Error;
@@ -73,10 +76,21 @@ pub fn confirm(label: &str, default: bool) -> Result<bool, Error> {
 	}
 }
 
-pub fn choose(label: &str, rows: &[String]) -> Result<usize, Error> {
+pub fn grid<const N: usize>(rows: &[[String; N]]) {
+	for row in aligned_rows(rows) {
+		println!("  {row}");
+	}
+}
+
+pub fn choose<const N: usize>(
+	label: &str,
+	rows: &[[String; N]],
+) -> Result<usize, Error> {
 	println!("{}", style(label).bold());
-	for (index, row) in rows.iter().enumerate() {
-		println!("  {}  {row}", style(index + 1).cyan().bold());
+	let index_width = rows.len().to_string().len();
+	for (index, row) in aligned_rows(rows).iter().enumerate() {
+		let index = format!("{:>index_width$}", index + 1);
+		println!("  {}  {row}", style(index).cyan().bold());
 	}
 	loop {
 		let input = prompt(&format!("Choose 1-{}:", rows.len()))?;
@@ -89,6 +103,32 @@ pub fn choose(label: &str, rows: &[String]) -> Result<usize, Error> {
 	}
 }
 
+fn aligned_rows<const N: usize>(rows: &[[String; N]]) -> Vec<String> {
+	let mut widths = [0; N];
+	for row in rows {
+		for (width, value) in
+			widths.iter_mut().zip(row).take(N.saturating_sub(1))
+		{
+			*width = (*width).max(measure_text_width(value));
+		}
+	}
+	rows.iter()
+		.map(|row| {
+			row.iter()
+				.enumerate()
+				.map(|(index, value)| {
+					pad_str(value, widths[index], Alignment::Left, None)
+				})
+				.collect::<Vec<_>>()
+				.join("  ")
+		})
+		.collect()
+}
+
 pub fn red(text: impl std::fmt::Display) -> String {
 	Style::new().red().apply_to(text).to_string()
 }
+
+#[cfg(test)]
+#[path = "ui_tests.rs"]
+mod tests;
