@@ -13,7 +13,7 @@ A selectable installment of a Series, identified by its Anime365 episode ID and 
 _Avoid_: File, video
 
 **Episode range**:
-An inclusive numeric interval requested from a Series. Missing whole-number Episodes require explicit confirmation, and fractional Episodes inside the interval form an optional subset that is included only by explicit choice.
+One or more inclusive numeric intervals requested from a Series. Overlapping intervals form their union. Missing whole-number Episodes require explicit confirmation, and fractional Episodes inside the intervals form an optional subset that is included only by explicit choice.
 _Avoid_: Download batch
 
 **Translation**:
