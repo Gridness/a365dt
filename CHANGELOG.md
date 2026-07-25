@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Gridness/a365dt/compare/v0.3.0...v0.4.0) (2026-07-25)
+
+
+### Features
+
+* **cli:** alert when downloads finish ([#11](https://github.com/Gridness/a365dt/issues/11)) ([3b96533](https://github.com/Gridness/a365dt/commit/3b9653310e79bcc867b1da2424261cf81a7addc2))
+
 ## [0.3.0](https://github.com/Gridness/a365dt/compare/v0.2.0...v0.3.0) (2026-07-25)
 
 
