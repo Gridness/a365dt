@@ -49,6 +49,12 @@ pub fn failure(text: impl std::fmt::Display) {
 	eprintln!("{} {text}", style("✗").red().bold());
 }
 
+pub fn alert() {
+	if io::stderr().is_terminal() {
+		eprint!("\x07");
+	}
+}
+
 pub fn prompt(label: &str) -> Result<String, Error> {
 	print!("{} {} ", style("?").cyan().bold(), style(label).bold());
 	io::stdout().flush().map_err(|error| {

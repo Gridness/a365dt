@@ -160,6 +160,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
 		.collect();
 	let summary = download::run(api, jobs, args.jobs.get(), args.debug).await;
 	print_summary(&summary, &directory, args.debug);
+	ui::alert();
 	let interrupted = summary
 		.outcomes
 		.iter()
