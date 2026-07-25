@@ -67,7 +67,8 @@ pub fn choose_series(series: &[Series]) -> Result<Series, Error> {
 
 pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 	loop {
-		let input = ui::prompt("Episode range (1-12, 0-12.5, or 5):")?;
+		let input =
+			ui::prompt("Episode ranges (examples: 1-12,16-18; 0-12.5; 5):")?;
 		let plan = match plan_range(episodes, &input) {
 			Ok(plan) => plan,
 			Err(error) => {
@@ -84,7 +85,7 @@ pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 				"How should a365dt proceed?",
 				&[
 					["Continue with available episodes".into()],
-					["Enter a different range".into()],
+					["Enter a different selection".into()],
 					["Cancel".into()],
 				],
 			)? {
@@ -108,7 +109,7 @@ pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 		}
 		selected.sort_by(episode_order);
 		if selected.is_empty() {
-			ui::warning("The range contains no selected episodes.");
+			ui::warning("The selection contains no episodes.");
 			continue;
 		}
 		return Ok(selected);
@@ -296,17 +297,39 @@ pub fn choose_resolutions(
 }
 
 fn plan_range(episodes: &[Episode], input: &str) -> Result<RangePlan, String> {
-	let (start, end) = if let Some((start, end)) = input.split_once('-') {
-		(number(start)?, number(end)?)
-	} else {
-		let value = number(input)?;
-		(value, value)
-	};
-	if start > end || end - start > 10_000.0 {
-		return Err(
-			"Enter an ascending range no wider than 10,000 episodes.".into()
-		);
+	let invalid_range = "Enter ascending ranges no wider than 10,000 episodes \
+		after merging overlaps.";
+	let mut ranges = input
+		.split(',')
+		.map(|input| {
+			let (start, end) = if let Some((start, end)) = input.split_once('-')
+			{
+				(number(start)?, number(end)?)
+			} else {
+				let value = number(input)?;
+				(value, value)
+			};
+			if start > end {
+				return Err(invalid_range.into());
+			}
+			Ok((start, end))
+		})
+		.collect::<Result<Vec<_>, String>>()?;
+	ranges.sort_by(|left, right| left.0.total_cmp(&right.0));
+	let mut merged = Vec::<(f64, f64)>::new();
+	for (start, end) in ranges {
+		if let Some((_, previous_end)) = merged.last_mut()
+			&& start <= *previous_end
+		{
+			*previous_end = previous_end.max(end);
+		} else {
+			merged.push((start, end));
+		}
 	}
+	if merged.iter().any(|(start, end)| end - start > 10_000.0) {
+		return Err(invalid_range.into());
+	}
+	let ranges = merged;
 	let mut whole = Vec::new();
 	let mut fractional = Vec::new();
 	let mut present = BTreeSet::new();
@@ -314,7 +337,10 @@ fn plan_range(episodes: &[Episode], input: &str) -> Result<RangePlan, String> {
 		let Ok(value) = episode.episode_int.parse::<f64>() else {
 			continue;
 		};
-		if (start..=end).contains(&value) {
+		if ranges
+			.iter()
+			.any(|(start, end)| (*start..=*end).contains(&value))
+		{
 			if value.fract() == 0.0 {
 				present.insert(value as u64);
 				whole.push(episode.clone());
@@ -323,7 +349,9 @@ fn plan_range(episodes: &[Episode], input: &str) -> Result<RangePlan, String> {
 			}
 		}
 	}
-	let missing = (start.ceil() as u64..=end.floor() as u64)
+	let missing = ranges
+		.into_iter()
+		.flat_map(|(start, end)| start.ceil() as u64..=end.floor() as u64)
 		.filter(|number| !present.contains(number))
 		.collect();
 	Ok(RangePlan {
