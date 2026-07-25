@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Gridness/a365dt/compare/v0.2.0...v0.3.0) (2026-07-25)
+
+
+### Features
+
+* **cli:** support multiple episode ranges ([#9](https://github.com/Gridness/a365dt/issues/9)) ([4ce1084](https://github.com/Gridness/a365dt/commit/4ce108423709caabb71fac392e9500a6d8165ae6))
+
 ## [0.2.0](https://github.com/Gridness/a365dt/compare/v0.1.0...v0.2.0) (2026-07-20)
 
 
