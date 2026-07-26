@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Gridness/a365dt/compare/v0.4.0...v0.5.0) (2026-07-26)
+
+
+### Features
+
+* **cli:** add interactive access token authentication ([#14](https://github.com/Gridness/a365dt/issues/14)) ([ae2a008](https://github.com/Gridness/a365dt/commit/ae2a0088c14917e19640063b0ca41bdb7be7006c))
+
 ## [0.4.0](https://github.com/Gridness/a365dt/compare/v0.3.0...v0.4.0) (2026-07-25)
 
 
