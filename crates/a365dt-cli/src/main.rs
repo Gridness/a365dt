@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod download;
 mod error;
 mod select;
@@ -19,30 +20,6 @@ use crate::{
 	error::Error,
 	select::Release,
 };
-
-const ACCESS_TOKEN_HELP: &str = r#"ANIME365_ACCESS_TOKEN is missing or empty.
-
-Obtain an access token:
-1. Sign in to https://anime365.ru in your browser.
-2. Open https://anime365.ru/api-clients.
-3. Enter a client name and click "Создать клиент".
-4. Follow the displayed link to get your access token.
-
-Save the token in a password manager or OS credential store. Do not put it in
-project files, shell profiles, command arguments, or shell history.
-
-Pass it to a365dt through the environment for the current shell:
-
-macOS/Linux (bash or zsh):
-  printf 'Anime365 access token: '; read -rs ANIME365_ACCESS_TOKEN; printf '\n'
-  export ANIME365_ACCESS_TOKEN
-  a365dt
-  unset ANIME365_ACCESS_TOKEN
-
-PowerShell 7:
-  $env:ANIME365_ACCESS_TOKEN = Read-Host 'Anime365 access token' -MaskInput
-  a365dt
-  Remove-Item Env:ANIME365_ACCESS_TOKEN"#;
 
 #[derive(Parser)]
 #[command(
@@ -80,15 +57,12 @@ async fn main() -> ExitCode {
 
 async fn run(args: Args) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
-	let token = std::env::var("ANIME365_ACCESS_TOKEN")
-		.map_err(|_| Error::new(ACCESS_TOKEN_HELP))?;
-	if token.trim().is_empty() {
-		return Err(Error::new(ACCESS_TOKEN_HELP));
-	}
-	let api = Anime365::new(token)?;
+	let access_token = auth::access_token()?;
+	let api = Anime365::new(access_token.value().to_owned())?;
 	ui::note("Validating Anime365 access…");
 	api.validate().await?;
 	ui::success("Authenticated");
+	auth::store_if_requested(&access_token)?;
 
 	let input = if args.query.is_empty() {
 		ui::prompt("Search title or Anime365 catalogue URL:")?

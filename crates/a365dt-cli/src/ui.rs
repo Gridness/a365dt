@@ -70,6 +70,19 @@ pub fn prompt(label: &str) -> Result<String, Error> {
 	Ok(input.trim().to_owned())
 }
 
+pub fn secret(label: &str) -> Result<String, Error> {
+	print!("{} {} ", style("?").cyan().bold(), style(label).bold());
+	io::stdout().flush().map_err(|error| {
+		Error::with_debug("Could not display the secure input prompt.", error)
+	})?;
+	Term::stdout()
+		.read_secure_line()
+		.map(|input| input.trim().to_owned())
+		.map_err(|error| {
+			Error::with_debug("Could not read secure terminal input.", error)
+		})
+}
+
 pub fn confirm(label: &str, default: bool) -> Result<bool, Error> {
 	let hint = if default { "[Y/n]" } else { "[y/N]" };
 	loop {

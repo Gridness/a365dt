@@ -16,6 +16,9 @@ reqwest.workspace = true
 serde.workspace = true
 tokio.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
 [dev-dependencies]
 pretty_assertions.workspace = true
 serde_json.workspace = true

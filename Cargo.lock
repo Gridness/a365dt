@@ -11,6 +11,7 @@ dependencies = [
  "indicatif",
  "pretty_assertions",
  "reqwest",
+ "security-framework",
  "serde",
  "serde_json",
  "tokio",
