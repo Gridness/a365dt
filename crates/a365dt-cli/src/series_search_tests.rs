@@ -10,6 +10,7 @@ fn series(id: u64, title: &str, year: u16) -> Series {
 		year: Some(year),
 		type_title: Some("TV".into()),
 		number_of_episodes: Some(24),
+		poster_url_small: None,
 		episodes: Vec::new(),
 	}
 }

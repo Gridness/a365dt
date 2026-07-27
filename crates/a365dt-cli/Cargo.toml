@@ -9,10 +9,12 @@ name = "a365dt"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 clap.workspace = true
 console.workspace = true
 directories.workspace = true
 indicatif.workspace = true
+image.workspace = true
 rapidfuzz.workspace = true
 reqwest.workspace = true
 serde.workspace = true

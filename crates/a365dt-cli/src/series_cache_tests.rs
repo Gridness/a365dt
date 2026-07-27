@@ -13,12 +13,14 @@ fn serializes_catalogue_without_episode_details() {
 			year: Some(2020),
 			type_title: Some("TV".into()),
 			number_of_episodes: Some(24),
+			poster_url_small: None,
 			episodes: Vec::new(),
 		}],
 	};
 	let json = serde_json::to_string(&cache).unwrap();
 
 	assert!(!json.contains("episodes"));
+	assert!(!json.contains("posterUrlSmall"));
 	assert_eq!(serde_json::from_str::<Cache>(&json).unwrap(), cache);
 }
 

@@ -26,6 +26,8 @@ pub struct Series {
 	pub year: Option<u16>,
 	pub type_title: Option<String>,
 	pub number_of_episodes: Option<u32>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub poster_url_small: Option<String>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub episodes: Vec<Episode>,
 }
@@ -261,11 +263,19 @@ pub fn series_id_from_url(input: &str) -> Option<u64> {
 }
 
 fn normalize_url(input: &str) -> Result<Url> {
-	Url::parse(input)
+	let mut url = Url::parse(input)
 		.or_else(|_| Url::parse(ASSET_ORIGIN).and_then(|base| base.join(input)))
 		.map_err(|error| {
 			Error::with_debug("Anime365 returned an invalid media URL.", error)
-		})
+		})?;
+	if matches!(url.host_str(), Some("anime365.ru" | "www.anime365.ru"))
+		&& url.path().starts_with("/posters/")
+	{
+		url.set_host(Some("smotret-anime.org")).map_err(|error| {
+			Error::with_debug("Anime365 returned an invalid poster URL.", error)
+		})?;
+	}
+	Ok(url)
 }
 
 fn is_official(url: &Url) -> bool {

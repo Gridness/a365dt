@@ -9,10 +9,12 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # external dependencies
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 console = "0.16"
 directories = "6"
 indicatif = "0.18"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 rapidfuzz = "0.5"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 security-framework = "3"

@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod download;
 mod error;
+mod poster;
 mod search;
 mod select;
 mod series_cache;
@@ -73,6 +74,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
 
 	let series = series_search::choose(&api, args.query.join(" ")).await?;
 	ui::success(format!("Selected {}", series.title));
+	poster::show(&api, &series).await;
 	let episodes = select::choose_episodes(&series.episodes)?;
 	let translations = api.translations(series.id).await?;
 	let (track, releases) = select::choose_track(translations, &episodes)?;
