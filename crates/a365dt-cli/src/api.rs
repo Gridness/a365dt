@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::{Client, Method, Response, Url, header};
+use reqwest::{Client, Method, RequestBuilder, Response, Url, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::error::Error;
@@ -170,26 +170,35 @@ impl Anime365 {
 			.await
 	}
 
-	pub async fn asset(
+	pub async fn asset(&self, method: Method, url: &str) -> Result<Response> {
+		send_asset(self.asset_request(method, url)?).await
+	}
+
+	pub async fn asset_from(
+		&self,
+		url: &str,
+		start: u64,
+		validator: &str,
+	) -> Result<Response> {
+		send_asset(
+			self.asset_request(Method::GET, url)?
+				.header(header::RANGE, format!("bytes={start}-"))
+				.header(header::IF_RANGE, validator),
+		)
+		.await
+	}
+
+	fn asset_request(
 		&self,
 		method: Method,
 		url: &str,
-		start: Option<u64>,
-	) -> Result<Response> {
+	) -> Result<RequestBuilder> {
 		let url = normalize_url(url)?;
 		let mut request = self.http.request(method, url.clone());
 		if is_official(&url) {
 			request = request.query(&[("access_token", &self.token)]);
 		}
-		if let Some(start) = start {
-			request = request.header(header::RANGE, format!("bytes={start}-"));
-		}
-		request.send().await.map_err(|error| {
-			request_error(
-				"The request to the Anime365 media server failed.",
-				error,
-			)
-		})
+		Ok(request)
 	}
 
 	async fn get<T: DeserializeOwned>(
@@ -292,6 +301,12 @@ fn is_official(url: &Url) -> bool {
 
 fn request_error(message: &str, error: reqwest::Error) -> Error {
 	Error::with_debug(message, error.without_url())
+}
+
+async fn send_asset(request: RequestBuilder) -> Result<Response> {
+	request.send().await.map_err(|error| {
+		request_error("The request to the Anime365 media server failed.", error)
+	})
 }
 
 #[cfg(test)]

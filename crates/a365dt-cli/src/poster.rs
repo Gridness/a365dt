@@ -32,7 +32,7 @@ pub async fn show(api: &Anime365, series: &Series) {
 	let Some(url) = series.poster_url_small.as_deref() else {
 		return;
 	};
-	let Ok(response) = api.asset(Method::GET, url, None).await else {
+	let Ok(response) = api.asset(Method::GET, url).await else {
 		return;
 	};
 	if !response.status().is_success() {
