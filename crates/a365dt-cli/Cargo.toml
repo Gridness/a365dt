@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 base64.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 console.workspace = true
 directories.workspace = true
 indicatif.workspace = true

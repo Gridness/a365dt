@@ -17,7 +17,8 @@ use std::{
 	collections::VecDeque, num::NonZeroUsize, path::PathBuf, process::ExitCode,
 };
 
-use clap::Parser;
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::aot::{Shell, generate};
 use console::style;
 use indicatif::{HumanBytes, HumanDuration};
 use tokio::{fs, process::Command, task::JoinSet};
@@ -31,10 +32,14 @@ use crate::{
 
 #[derive(Parser)]
 #[command(
+	name = "a365dt",
 	version,
 	about = "Download Anime365 episodes without guessing translations"
 )]
 struct Args {
+	#[command(subcommand)]
+	command: Option<Commands>,
+
 	#[arg(value_name = "QUERY_OR_URL", num_args = 0..)]
 	query: Vec<String>,
 
@@ -49,10 +54,25 @@ struct Args {
 	debug: bool,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+	/// Generate shell completions.
+	Completions { shell: Shell },
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-	ui::init();
 	let args = Args::parse();
+	if let Some(Commands::Completions { shell }) = args.command.as_ref() {
+		generate(
+			*shell,
+			&mut Args::command(),
+			"a365dt",
+			&mut std::io::stdout(),
+		);
+		return ExitCode::SUCCESS;
+	}
+	ui::init();
 	let debug = args.debug;
 	match run(args).await {
 		Ok(code) => code,

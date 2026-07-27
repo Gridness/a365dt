@@ -23,6 +23,7 @@ class A365dt < Formula
   end
   def install
     bin.install "a365dt"
+    generate_completions_from_executable bin/"a365dt", "completions"
   end
   test do
     assert_match version.to_s, shell_output("#{bin}/a365dt --version")
