@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Gridness/a365dt/compare/v0.5.0...v0.6.0) (2026-07-27)
+
+
+### Features
+
+* **cli:** add interactive catalogue search ([#16](https://github.com/Gridness/a365dt/issues/16)) ([108918e](https://github.com/Gridness/a365dt/commit/108918e18a575ac83a73f3f82ba31d946cfeabf7))
+
 ## [0.5.0](https://github.com/Gridness/a365dt/compare/v0.4.0...v0.5.0) (2026-07-26)
 
 
