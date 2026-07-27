@@ -2,8 +2,15 @@ mod api;
 mod auth;
 mod download;
 mod error;
+mod search;
 mod select;
+mod series_cache;
+mod series_search;
 mod ui;
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod search_tests;
 
 use std::{
 	collections::VecDeque, num::NonZeroUsize, path::PathBuf, process::ExitCode,
@@ -15,7 +22,7 @@ use indicatif::{HumanBytes, HumanDuration};
 use tokio::{fs, process::Command, task::JoinSet};
 
 use crate::{
-	api::{Anime365, Episode, Translation, series_id_from_url},
+	api::{Anime365, Episode, Translation},
 	download::{Job, Status},
 	error::Error,
 	select::Release,
@@ -64,23 +71,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
 	ui::success("Authenticated");
 	auth::store_if_requested(&access_token)?;
 
-	let input = if args.query.is_empty() {
-		ui::prompt("Search title or Anime365 catalogue URL:")?
-	} else {
-		args.query.join(" ")
-	};
-	let series =
-		if input.starts_with("http://") || input.starts_with("https://") {
-			let id = series_id_from_url(&input).ok_or_else(|| {
-				"Enter an official Anime365 series catalogue URL.".to_owned()
-			})?;
-			api.series(id).await?
-		} else {
-			let spinner = ui::spinner("Searching Anime365…");
-			let matches = api.search(&input).await;
-			spinner.finish_and_clear();
-			select::choose_series(&matches?)?
-		};
+	let series = series_search::choose(&api, args.query.join(" ")).await?;
 	ui::success(format!("Selected {}", series.title));
 	let episodes = select::choose_episodes(&series.episodes)?;
 	let translations = api.translations(series.id).await?;

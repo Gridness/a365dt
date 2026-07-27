@@ -8,6 +8,14 @@ a365dt downloads user-selected Anime365 releases while keeping episode and trans
 An Anime365 title that contains episodes.
 _Avoid_: Anime
 
+**Series suggestion**:
+A Series proposed as a likely match while the user searches by title.
+_Avoid_: Search guess, search result
+
+**Series catalogue**:
+The collection of Series available for discovery on Anime365.
+_Avoid_: Title index, title database
+
 **Episode**:
 A selectable installment of a Series, identified by its Anime365 episode ID and displayed episode label.
 _Avoid_: File, video
@@ -19,6 +27,10 @@ _Avoid_: Download batch
 **Translation**:
 One Anime365 media release for exactly one Episode, characterized by its kind, language, and authors. A RAW release is also a Translation in Anime365 terminology.
 _Avoid_: Translation track
+
+**Translation authors**:
+The people or group credited for a Translation.
+_Avoid_: Translation title
 
 **Subtitle asset**:
 A separate styled subtitle file exposed by Anime365 for a subtitle Translation. Its absence means the Translation's subtitles are contained in the video.

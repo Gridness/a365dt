@@ -1,12 +1,14 @@
 use std::time::Duration;
 
 use reqwest::{Client, Method, Response, Url, header};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::error::Error;
 
 const ASSET_ORIGIN: &str = "https://smotret-anime.org";
 const API: &str = "https://anime365.ru/api";
+const SERIES_FIELDS: &str = "id,title,year,typeTitle,numberOfEpisodes";
+pub const SERIES_PAGE_SIZE: usize = 1_000;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -16,7 +18,7 @@ pub struct Anime365 {
 	token: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Series {
 	pub id: u64,
@@ -24,11 +26,11 @@ pub struct Series {
 	pub year: Option<u16>,
 	pub type_title: Option<String>,
 	pub number_of_episodes: Option<u32>,
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub episodes: Vec<Episode>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Episode {
 	pub id: u64,
@@ -103,18 +105,29 @@ impl Anime365 {
 			&[
 				("query", query.to_owned()),
 				("limit", "10".into()),
-				(
-					"fields",
-					"id,title,year,typeTitle,numberOfEpisodes,episodes".into(),
-				),
+				("fields", SERIES_FIELDS.into()),
 			],
 			false,
 		)
 		.await
 	}
 
-	pub async fn series(&self, id: u64) -> Result<Series> {
-		self.get(&format!("/series/{id}"), &[], false).await
+	pub async fn series(&self, id: u64) -> Result<Option<Series>> {
+		self.get_optional(&format!("/series/{id}"), &[], false)
+			.await
+	}
+
+	pub async fn series_page(&self, offset: usize) -> Result<Vec<Series>> {
+		self.get(
+			"/series/",
+			&[
+				("limit", SERIES_PAGE_SIZE.to_string()),
+				("offset", offset.to_string()),
+				("fields", SERIES_FIELDS.into()),
+			],
+			false,
+		)
+		.await
 	}
 
 	pub async fn translations(
@@ -183,6 +196,19 @@ impl Anime365 {
 		query: &[(&str, String)],
 		authenticated: bool,
 	) -> Result<T> {
+		self.get_optional(path, query, authenticated)
+			.await?
+			.ok_or_else(|| {
+				Error::new("Anime365 did not return the requested API data.")
+			})
+	}
+
+	async fn get_optional<T: DeserializeOwned>(
+		&self,
+		path: &str,
+		query: &[(&str, String)],
+		authenticated: bool,
+	) -> Result<Option<T>> {
 		let mut request = self
 			.http
 			.get(format!("{API}{path}"))
@@ -201,6 +227,11 @@ impl Anime365 {
 				error,
 			)
 		})?;
+		if status == reqwest::StatusCode::NOT_FOUND
+			|| body.error.as_ref().is_some_and(|error| error.code == 404)
+		{
+			return Ok(None);
+		}
 		if let Some(error) = body.error {
 			return Err(Error::new(format!(
 				"Anime365 error {}: {}",
@@ -212,9 +243,7 @@ impl Anime365 {
 				"Anime365 rejected the API request (HTTP {status})."
 			)));
 		}
-		body.data.ok_or_else(|| {
-			Error::new("Anime365 did not return the requested API data.")
-		})
+		Ok(body.data)
 	}
 }
 

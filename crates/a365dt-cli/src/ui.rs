@@ -11,6 +11,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::error::Error;
 
+pub(crate) mod selector;
+
+pub use selector::choose;
+
 pub fn init() {
 	let color =
 		io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
@@ -98,28 +102,6 @@ pub fn confirm(label: &str, default: bool) -> Result<bool, Error> {
 pub fn grid<const N: usize>(rows: &[[String; N]]) {
 	for row in aligned_rows(rows, available_width(2)) {
 		println!("  {row}");
-	}
-}
-
-pub fn choose<const N: usize>(
-	label: &str,
-	rows: &[[String; N]],
-) -> Result<usize, Error> {
-	println!("{}", style(label).bold());
-	let index_width = rows.len().to_string().len();
-	let width = available_width(index_width + 4);
-	for (index, row) in aligned_rows(rows, width).iter().enumerate() {
-		let index = format!("{:>index_width$}", index + 1);
-		println!("  {}  {row}", style(index).cyan().bold());
-	}
-	loop {
-		let input = prompt(&format!("Choose 1-{}:", rows.len()))?;
-		if let Ok(choice) = input.parse::<usize>()
-			&& (1..=rows.len()).contains(&choice)
-		{
-			return Ok(choice - 1);
-		}
-		warning("Choose one of the listed numbers.");
 	}
 }
 
