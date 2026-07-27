@@ -1,6 +1,8 @@
+use std::{fs, process, time::SystemTime};
+
 use pretty_assertions::assert_eq;
 
-use super::{Cache, MAX_AGE};
+use super::{Cache, MAX_AGE, prune_directory};
 use crate::api::Series;
 
 #[test]
@@ -33,4 +35,23 @@ fn expires_catalogue_after_one_day() {
 
 	assert!(cache.is_fresh_at(100 + MAX_AGE.as_secs() - 1));
 	assert!(!cache.is_fresh_at(100 + MAX_AGE.as_secs()));
+}
+
+#[test]
+fn prunes_cache_directory_idempotently() {
+	let directory = std::env::temp_dir().join(format!(
+		"a365dt-cache-prune-{}-{}",
+		process::id(),
+		SystemTime::now()
+			.duration_since(SystemTime::UNIX_EPOCH)
+			.unwrap()
+			.as_nanos()
+	));
+	fs::create_dir_all(&directory).unwrap();
+	fs::write(directory.join("series.json"), b"cached").unwrap();
+
+	prune_directory(&directory).unwrap();
+	prune_directory(&directory).unwrap();
+
+	assert!(!directory.exists());
 }

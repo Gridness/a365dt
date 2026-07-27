@@ -1,5 +1,6 @@
 use std::{
-	fs,
+	fs, io,
+	path::{Path, PathBuf},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -52,9 +53,25 @@ pub fn store(cache: &Cache) {
 	}
 }
 
-fn cache_path() -> Option<std::path::PathBuf> {
+pub fn prune() -> io::Result<()> {
+	cache_directory().map_or(Ok(()), |path| prune_directory(&path))
+}
+
+fn prune_directory(path: &Path) -> io::Result<()> {
+	match fs::remove_dir_all(path) {
+		Ok(()) => Ok(()),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+		Err(error) => Err(error),
+	}
+}
+
+fn cache_directory() -> Option<PathBuf> {
 	ProjectDirs::from("", "", "a365dt")
-		.map(|directories| directories.cache_dir().join("series.json"))
+		.map(|directories| directories.cache_dir().to_owned())
+}
+
+fn cache_path() -> Option<PathBuf> {
+	cache_directory().map(|directory| directory.join("series.json"))
 }
 
 fn now() -> u64 {

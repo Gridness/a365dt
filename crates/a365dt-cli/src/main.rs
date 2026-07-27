@@ -56,8 +56,20 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
+	/// Manage the local cache.
+	Cache {
+		#[command(subcommand)]
+		command: CacheCommand,
+	},
+
 	/// Generate shell completions.
 	Completions { shell: Shell },
+}
+
+#[derive(Subcommand)]
+enum CacheCommand {
+	/// Clear the local cache.
+	Prune,
 }
 
 #[tokio::main]
@@ -85,6 +97,16 @@ async fn main() -> ExitCode {
 
 async fn run(args: Args) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
+	if let Some(Commands::Cache {
+		command: CacheCommand::Prune,
+	}) = args.command
+	{
+		series_cache::prune().map_err(|error| {
+			Error::with_debug("Could not clear the local cache.", error)
+		})?;
+		ui::success("Local cache cleared");
+		return Ok(ExitCode::SUCCESS);
+	}
 	let access_token = auth::access_token()?;
 	let api = Anime365::new(access_token.value().to_owned())?;
 	ui::note("Validating Anime365 access…");
