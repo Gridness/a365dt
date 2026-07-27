@@ -2,20 +2,29 @@ mod api;
 mod auth;
 mod download;
 mod error;
+mod poster;
+mod search;
 mod select;
+mod series_cache;
+mod series_search;
 mod ui;
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod search_tests;
 
 use std::{
 	collections::VecDeque, num::NonZeroUsize, path::PathBuf, process::ExitCode,
 };
 
-use clap::Parser;
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::aot::{Shell, generate};
 use console::style;
 use indicatif::{HumanBytes, HumanDuration};
 use tokio::{fs, process::Command, task::JoinSet};
 
 use crate::{
-	api::{Anime365, Episode, Translation, series_id_from_url},
+	api::{Anime365, Episode, Translation},
 	download::{Job, Status},
 	error::Error,
 	select::Release,
@@ -23,10 +32,14 @@ use crate::{
 
 #[derive(Parser)]
 #[command(
+	name = "a365dt",
 	version,
 	about = "Download Anime365 episodes without guessing translations"
 )]
 struct Args {
+	#[command(subcommand)]
+	command: Option<Commands>,
+
 	#[arg(value_name = "QUERY_OR_URL", num_args = 0..)]
 	query: Vec<String>,
 
@@ -41,10 +54,37 @@ struct Args {
 	debug: bool,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+	/// Manage the local cache.
+	Cache {
+		#[command(subcommand)]
+		command: CacheCommand,
+	},
+
+	/// Generate shell completions.
+	Completions { shell: Shell },
+}
+
+#[derive(Subcommand)]
+enum CacheCommand {
+	/// Clear the local cache.
+	Prune,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-	ui::init();
 	let args = Args::parse();
+	if let Some(Commands::Completions { shell }) = args.command.as_ref() {
+		generate(
+			*shell,
+			&mut Args::command(),
+			"a365dt",
+			&mut std::io::stdout(),
+		);
+		return ExitCode::SUCCESS;
+	}
+	ui::init();
 	let debug = args.debug;
 	match run(args).await {
 		Ok(code) => code,
@@ -57,6 +97,16 @@ async fn main() -> ExitCode {
 
 async fn run(args: Args) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
+	if let Some(Commands::Cache {
+		command: CacheCommand::Prune,
+	}) = args.command
+	{
+		series_cache::prune().map_err(|error| {
+			Error::with_debug("Could not clear the local cache.", error)
+		})?;
+		ui::success("Local cache cleared");
+		return Ok(ExitCode::SUCCESS);
+	}
 	let access_token = auth::access_token()?;
 	let api = Anime365::new(access_token.value().to_owned())?;
 	ui::note("Validating Anime365 access…");
@@ -64,24 +114,9 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
 	ui::success("Authenticated");
 	auth::store_if_requested(&access_token)?;
 
-	let input = if args.query.is_empty() {
-		ui::prompt("Search title or Anime365 catalogue URL:")?
-	} else {
-		args.query.join(" ")
-	};
-	let series =
-		if input.starts_with("http://") || input.starts_with("https://") {
-			let id = series_id_from_url(&input).ok_or_else(|| {
-				"Enter an official Anime365 series catalogue URL.".to_owned()
-			})?;
-			api.series(id).await?
-		} else {
-			let spinner = ui::spinner("Searching Anime365…");
-			let matches = api.search(&input).await;
-			spinner.finish_and_clear();
-			select::choose_series(&matches?)?
-		};
+	let series = series_search::choose(&api, args.query.join(" ")).await?;
 	ui::success(format!("Selected {}", series.title));
+	poster::show(&api, &series).await;
 	let episodes = select::choose_episodes(&series.episodes)?;
 	let translations = api.translations(series.id).await?;
 	let (track, releases) = select::choose_track(translations, &episodes)?;

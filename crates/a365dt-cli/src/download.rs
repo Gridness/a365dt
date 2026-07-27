@@ -1,6 +1,6 @@
 use std::{
 	collections::VecDeque,
-	io::IsTerminal,
+	io::{ErrorKind, IsTerminal},
 	path::{Path, PathBuf},
 	sync::Arc,
 	time::{Duration, Instant},
@@ -70,6 +70,44 @@ struct TransferError {
 	error: Error,
 	retry: bool,
 	retry_after: Option<Duration>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ResumeState {
+	total: u64,
+	validator: String,
+}
+
+impl ResumeState {
+	fn from_response(response: &Response, total: Option<u64>) -> Option<Self> {
+		let validator = response
+			.headers()
+			.get(header::ETAG)
+			.and_then(|value| value.to_str().ok())
+			.filter(|value| !value.starts_with("W/"))
+			.or_else(|| {
+				response
+					.headers()
+					.get(header::LAST_MODIFIED)
+					.and_then(|value| value.to_str().ok())
+			})?;
+		Some(Self {
+			total: total?,
+			validator: validator.into(),
+		})
+	}
+
+	fn parse(value: &str) -> Option<Self> {
+		let (total, validator) = value.split_once('\n')?;
+		Some(Self {
+			total: total.parse().ok()?,
+			validator: validator.into(),
+		})
+	}
+
+	fn serialize(&self) -> String {
+		format!("{}\n{}", self.total, self.validator)
+	}
 }
 
 impl Job {
@@ -348,16 +386,20 @@ async fn transfer(
 	bar: &ProgressBar,
 	cancel: &mut watch::Receiver<bool>,
 ) -> Result<(bool, u64), TransferError> {
+	let part = part_path(final_path);
+	let mut current_state = None;
 	let total = if resume {
-		let head = api.asset(Method::HEAD, url, None).await.map_err(network)?;
+		let head = api.asset(Method::HEAD, url).await.map_err(network)?;
 		check_status(&head)?;
 		let total = first_nonzero(head.content_length(), bar.length());
+		current_state = ResumeState::from_response(&head, total);
 		if let Some(total) = total {
 			bar.set_length(total);
 			protect_mismatch(final_path, total)
 				.await
 				.map_err(io_error)?;
 			if final_path.exists() {
+				remove_resume_state(&part).await.map_err(io_error)?;
 				remove_corrupt_backups(final_path).await.map_err(io_error)?;
 				bar.set_position(total);
 				return Ok((true, total));
@@ -369,31 +411,45 @@ async fn transfer(
 	} else {
 		None
 	};
-	let part = part_path(final_path);
-	let mut start = if let Some(total) = total {
-		file_len(&part).await.min(total)
+	let part_len = file_len(&part).await;
+	let saved_state = if part_len > 0 {
+		read_resume_state(&part).await.map_err(io_error)?
 	} else {
-		0
+		None
 	};
-	if let Some(total) = total
-		&& file_len(&part).await > total
-	{
-		start = 0;
-	}
+	let mut start = resume_start(
+		part_len,
+		total,
+		saved_state.as_ref(),
+		current_state.as_ref(),
+	);
 	if total == Some(start) && start > 0 {
 		finalize(&part, final_path).await.map_err(io_error)?;
 		bar.set_position(start);
 		return Ok((false, start));
 	}
-	let mut response = api
-		.asset(Method::GET, url, (start > 0).then_some(start))
+	let mut response = if start > 0 {
+		api.asset_from(
+			url,
+			start,
+			&saved_state
+				.expect("resumed part has matching state")
+				.validator,
+		)
 		.await
-		.map_err(network)?;
+	} else {
+		api.asset(Method::GET, url).await
+	}
+	.map_err(network)?;
 	check_status(&response)?;
 	if start > 0 && response.status() != StatusCode::PARTIAL_CONTENT {
 		start = 0;
 	}
-	let total = first_nonzero(total, response.content_length());
+	let total = if response.status() == StatusCode::PARTIAL_CONTENT {
+		total
+	} else {
+		first_nonzero(response.content_length(), total)
+	};
 	if let Some(total) = total {
 		bar.set_length(total);
 	}
@@ -413,6 +469,14 @@ async fn transfer(
 		.open(&part)
 		.await
 		.map_err(io_error)?;
+	if resume && start == 0 {
+		write_resume_state(
+			&part,
+			ResumeState::from_response(&response, total).as_ref(),
+		)
+		.await
+		.map_err(io_error)?;
+	}
 	bar.set_position(start);
 	bar.reset_eta();
 	loop {
@@ -474,7 +538,52 @@ async fn protect_mismatch(path: &Path, expected: u64) -> std::io::Result<()> {
 
 async fn finalize(part: &Path, final_path: &Path) -> std::io::Result<()> {
 	fs::rename(part, final_path).await?;
+	remove_resume_state(part).await?;
 	remove_corrupt_backups(final_path).await
+}
+
+fn resume_start(
+	part_len: u64,
+	total: Option<u64>,
+	saved: Option<&ResumeState>,
+	current: Option<&ResumeState>,
+) -> u64 {
+	let Some(total) = total else {
+		return 0;
+	};
+	if part_len > total || (part_len > 0 && saved != current) {
+		return 0;
+	}
+	part_len
+}
+
+async fn read_resume_state(
+	part: &Path,
+) -> std::io::Result<Option<ResumeState>> {
+	match fs::read_to_string(resume_state_path(part)).await {
+		Ok(value) => Ok(ResumeState::parse(&value)),
+		Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+		Err(error) => Err(error),
+	}
+}
+
+async fn write_resume_state(
+	part: &Path,
+	state: Option<&ResumeState>,
+) -> std::io::Result<()> {
+	if let Some(state) = state {
+		fs::write(resume_state_path(part), state.serialize()).await
+	} else {
+		remove_resume_state(part).await
+	}
+}
+
+async fn remove_resume_state(part: &Path) -> std::io::Result<()> {
+	match fs::remove_file(resume_state_path(part)).await {
+		Ok(()) => Ok(()),
+		Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+		Err(error) => Err(error),
+	}
 }
 
 async fn remove_corrupt_backups(path: &Path) -> std::io::Result<()> {
@@ -607,6 +716,9 @@ fn backoff(attempt: usize, seed: u64) -> Duration {
 }
 fn part_path(path: &Path) -> PathBuf {
 	PathBuf::from(format!("{}.part", path.display()))
+}
+fn resume_state_path(part: &Path) -> PathBuf {
+	PathBuf::from(format!("{}.state", part.display()))
 }
 async fn file_len(path: &Path) -> u64 {
 	fs::metadata(path)

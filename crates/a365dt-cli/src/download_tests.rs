@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use pretty_assertions::assert_eq;
 
 use super::{
-	Job, finalize, first_nonzero, part_path, protect_mismatch, retryable,
-	sanitize, valid_content_range, verified_size,
+	Job, ResumeState, finalize, first_nonzero, part_path, protect_mismatch,
+	resume_start, retryable, sanitize, valid_content_range, verified_size,
 };
 use crate::{
 	api::{Episode, Translation},
@@ -60,6 +60,28 @@ fn validates_resumed_content_range() {
 	assert_eq!(valid_content_range("bytes 50-99/100", 50, 100), true);
 	assert_eq!(valid_content_range("bytes 0-99/100", 50, 100), false);
 	assert_eq!(valid_content_range("bytes 50-99/101", 50, 100), false);
+}
+
+#[test]
+fn resumes_only_when_the_partial_file_belongs_to_the_current_asset() {
+	let old = ResumeState {
+		total: 100,
+		validator: "old".into(),
+	};
+	let current = ResumeState {
+		total: 100,
+		validator: "current".into(),
+	};
+
+	assert_eq!(
+		[
+			resume_start(50, Some(100), Some(&current), Some(&current)),
+			resume_start(50, Some(100), Some(&old), Some(&current)),
+			resume_start(50, Some(100), None, Some(&current)),
+			resume_start(101, Some(100), Some(&current), Some(&current)),
+		],
+		[50, 0, 0, 0]
+	);
 }
 
 #[test]

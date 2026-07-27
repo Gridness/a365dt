@@ -46,7 +46,12 @@ pub fn choose_series(series: &[Series]) -> Result<Series, Error> {
 	if series.is_empty() {
 		return Err("No matching Anime365 series found.".into());
 	}
-	let rows = series
+	let rows = series_rows(series);
+	Ok(series[ui::choose("Search results", &rows)?].clone())
+}
+
+pub(crate) fn series_rows(series: &[Series]) -> Vec<[String; 4]> {
+	series
 		.iter()
 		.map(|item| {
 			[
@@ -61,8 +66,7 @@ pub fn choose_series(series: &[Series]) -> Result<Series, Error> {
 				),
 			]
 		})
-		.collect::<Vec<_>>();
-	Ok(series[ui::choose("Search results", &rows)?].clone())
+		.collect()
 }
 
 pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {

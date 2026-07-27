@@ -9,17 +9,24 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # external dependencies
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 console = "0.16"
+directories = "6"
 indicatif = "0.18"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+rapidfuzz = "0.5"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 security-framework = "3"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+unicode-normalization = "0.1"
 
 # test dependencies
+divan = "0.1"
 pretty_assertions = "1"
-serde_json = "1"
 
 [profile.dev]
 opt-level = "z"
