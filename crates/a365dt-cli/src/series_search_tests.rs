@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use pretty_assertions::assert_eq;
 
-use super::{api_query, ranked_series, upsert};
-use crate::api::Series;
+use super::{api_query, ranked_series, suggestions, upsert};
+use crate::{api::Series, series_cache::Cache};
 
 fn series(id: u64, title: &str, year: u16) -> Series {
 	Series {
@@ -40,4 +42,28 @@ fn updates_existing_series_and_appends_new_results() {
 	upsert(&mut catalogue, expected.clone());
 
 	assert_eq!(catalogue, expected);
+}
+
+#[test]
+fn prioritizes_learned_and_server_suggestions_without_title_matches() {
+	let catalogue = vec![
+		series(1, "Jujutsu Kaisen", 2020),
+		series(2, "Tengen Toppa Gurren Lagann", 2007),
+	];
+	let mut cache = Cache {
+		refreshed_at: 0,
+		series: catalogue.clone(),
+		aliases: BTreeMap::new(),
+	};
+
+	assert_eq!(
+		suggestions(&cache, "jjk", &[1], 10),
+		vec![catalogue[0].clone()]
+	);
+
+	cache.aliases.insert("jjk".into(), 2);
+	assert_eq!(
+		suggestions(&cache, "jjk", &[1, 2], 10),
+		vec![catalogue[1].clone(), catalogue[0].clone()]
+	);
 }

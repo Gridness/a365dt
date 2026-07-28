@@ -12,6 +12,10 @@ _Avoid_: Anime
 A Series proposed as a likely match while the user searches by title.
 _Avoid_: Search guess, search result
 
+**Series search alias**:
+Anime365-recognized shorthand or an alternative name for a Series that need not appear in its displayed title.
+_Avoid_: Acronym, abbreviation
+
 **Series catalogue**:
 The collection of Series available for discovery on Anime365.
 _Avoid_: Title index, title database

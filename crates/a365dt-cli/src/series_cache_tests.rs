@@ -1,4 +1,4 @@
-use std::{fs, process, time::SystemTime};
+use std::{collections::BTreeMap, fs, process, time::SystemTime};
 
 use pretty_assertions::assert_eq;
 
@@ -18,6 +18,7 @@ fn serializes_catalogue_without_episode_details() {
 			poster_url_small: None,
 			episodes: Vec::new(),
 		}],
+		aliases: BTreeMap::from([("jjk".into(), 7)]),
 	};
 	let json = serde_json::to_string(&cache).unwrap();
 
@@ -31,10 +32,33 @@ fn expires_catalogue_after_one_day() {
 	let cache = Cache {
 		refreshed_at: 100,
 		series: Vec::new(),
+		aliases: BTreeMap::new(),
 	};
 
 	assert!(cache.is_fresh_at(100 + MAX_AGE.as_secs() - 1));
 	assert!(!cache.is_fresh_at(100 + MAX_AGE.as_secs()));
+}
+
+#[test]
+fn remembers_normalized_aliases_until_the_series_is_removed() {
+	let mut cache = Cache {
+		series: vec![Series {
+			id: 7,
+			title: "Jujutsu Kaisen".into(),
+			year: Some(2020),
+			type_title: Some("TV".into()),
+			number_of_episodes: Some(47),
+			poster_url_small: None,
+			episodes: Vec::new(),
+		}],
+		..Cache::default()
+	};
+
+	cache.remember_alias("  JJK!!!  ", 7);
+	assert_eq!(cache.alias("jjk"), Some(7));
+
+	cache.remove_series(7);
+	assert_eq!(cache, Cache::default());
 }
 
 #[test]

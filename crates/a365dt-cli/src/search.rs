@@ -187,3 +187,7 @@ fn normalize(input: &str) -> Vec<String> {
 		.map(ToOwned::to_owned)
 		.collect()
 }
+
+pub(crate) fn normalize_query(input: &str) -> String {
+	normalize(input).join(" ")
+}
