@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/Gridness/a365dt/compare/v0.7.1...v0.7.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* **cli:** isolate development profile ([#28](https://github.com/Gridness/a365dt/issues/28)) ([4f56c3d](https://github.com/Gridness/a365dt/commit/4f56c3de4e6d8b117c1398cf1762770b50739f1f))
+
 ## [0.7.1](https://github.com/Gridness/a365dt/compare/v0.7.0...v0.7.1) (2026-07-28)
 
 
