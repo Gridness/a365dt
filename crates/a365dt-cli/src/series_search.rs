@@ -17,6 +17,7 @@ use crate::{
 		series_id_from_url,
 	},
 	error::Error,
+	l10n::tr,
 	search::Search,
 	select,
 	series_cache::{self, Cache},
@@ -27,7 +28,6 @@ use crate::{
 const REFRESH_CONCURRENCY: usize = 4;
 const MAX_CATALOGUE_SIZE: usize = 100_000;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(100);
-const SEARCH_LABEL: &str = "Search title or paste Anime365 URL";
 
 pub struct Selection {
 	pub series: Series,
@@ -71,7 +71,7 @@ async fn choose_line(
 		.map(|series| series.id)
 		.collect::<Vec<_>>();
 	if query.is_empty() {
-		query = ui::prompt("Search title or Anime365 catalogue URL:")?;
+		query = ui::prompt(&tr("search-prompt"))?;
 	}
 	if query.starts_with("http://") || query.starts_with("https://") {
 		return Ok(Selection {
@@ -109,7 +109,7 @@ async fn choose_line(
 		None => {
 			cache.remove_series(selected.id);
 			store(cache, telemetry).await;
-			Err("That cached Anime365 series no longer exists.".into())
+			Err(Error::new(tr("search-cached-missing")))
 		}
 	}
 }
@@ -132,8 +132,9 @@ async fn choose_interactive(
 	let mut server_matches = Vec::new();
 	prioritize(&mut state, &cache, &server_matches);
 	let mut layout = selector::Layout::new(&term, &rows);
+	let search_label = tr("search-label");
 	let mut lines =
-		selector::draw(&term, SEARCH_LABEL, &rows, &mut layout, &mut state)
+		selector::draw(&term, &search_label, &rows, &mut layout, &mut state)
 			.map_err(selector::term_error)?;
 	let (updates_tx, mut updates) = mpsc::unbounded_channel();
 	let (cache_tx, cache_rx) = mpsc::unbounded_channel();
@@ -182,7 +183,7 @@ async fn choose_interactive(
 						selector::clear(&term, lines)
 							.map_err(selector::term_error)?;
 						term.flush().map_err(selector::term_error)?;
-						let spinner = ui::spinner("Loading title…");
+						let spinner = ui::spinner(tr("search-loading"));
 						let series = api.series(selected.id).await;
 						spinner.finish_and_clear();
 						match series? {
@@ -193,7 +194,7 @@ async fn choose_interactive(
 								}
 								selector::write_choice(
 									&term,
-									SEARCH_LABEL,
+									&search_label,
 									&rows,
 									index,
 								)
@@ -213,13 +214,11 @@ async fn choose_interactive(
 								layout.replace(&term, &rows);
 								state.replace(&rows);
 								prioritize(&mut state, &cache, &server_matches);
-								ui::warning(
-									"That cached title no longer exists; removed it.",
-								);
+								ui::warning(tr("search-removed-missing"));
 								key_task = read_key(&term);
 								lines = selector::draw(
 									&term,
-									SEARCH_LABEL,
+									&search_label,
 									&rows,
 									&mut layout,
 									&mut state,
@@ -246,7 +245,7 @@ async fn choose_interactive(
 						selector::clear(&term, lines)
 							.map_err(selector::term_error)?;
 						term.flush().map_err(selector::term_error)?;
-						return Err("Cancelled.".into());
+						return Err(Error::cancelled());
 					}
 					selector::Action::Continue => {}
 				}
@@ -283,7 +282,7 @@ async fn choose_interactive(
 						ui::warning(error);
 						lines = selector::draw(
 							&term,
-							SEARCH_LABEL,
+							&search_label,
 							&rows,
 							&mut layout,
 							&mut state,
@@ -351,9 +350,14 @@ async fn choose_interactive(
 			}
 		}
 		selector::clear(&term, lines).map_err(selector::term_error)?;
-		lines =
-			selector::draw(&term, SEARCH_LABEL, &rows, &mut layout, &mut state)
-				.map_err(selector::term_error)?;
+		lines = selector::draw(
+			&term,
+			&search_label,
+			&rows,
+			&mut layout,
+			&mut state,
+		)
+		.map_err(selector::term_error)?;
 	}
 }
 
@@ -468,7 +472,7 @@ fn read_key(term: &Term) -> JoinHandle<io::Result<Key>> {
 
 fn resolve_key(key: Result<io::Result<Key>, JoinError>) -> Result<Key, Error> {
 	key.map_err(|error| {
-		Error::with_debug("The terminal input task stopped.", error)
+		Error::with_debug(tr("search-input-task-error"), error)
 	})?
 	.map_err(selector::term_error)
 }
@@ -481,12 +485,11 @@ fn api_query(query: &str) -> &str {
 }
 
 async fn load_url(api: &Anime365, input: &str) -> Result<Series, Error> {
-	let id = series_id_from_url(input).ok_or_else(|| {
-		"Enter an official Anime365 series catalogue URL.".to_owned()
-	})?;
+	let id =
+		series_id_from_url(input).ok_or_else(|| tr("search-invalid-url"))?;
 	api.series(id)
 		.await?
-		.ok_or_else(|| "That Anime365 series no longer exists.".into())
+		.ok_or_else(|| Error::new(tr("search-series-missing")))
 }
 
 fn ranked_series(

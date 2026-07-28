@@ -1,7 +1,4 @@
-use std::{
-	collections::HashSet,
-	io::{self, IsTerminal},
-};
+use std::{collections::HashSet, io};
 
 use console::{
 	Key, Term, measure_text_width, strip_ansi_codes, style, truncate_str,
@@ -10,9 +7,11 @@ use console::{
 use super::{alert, aligned_rows, prompt, warning};
 use crate::{
 	error::Error,
+	l10n::{tr, tr_args},
 	search::Search,
 	telemetry::{Operation, Recorder},
 };
+use fluent_bundle::FluentValue;
 
 const MAX_VISIBLE: usize = 10;
 
@@ -21,7 +20,7 @@ pub fn choose<const N: usize>(
 	rows: &[[String; N]],
 ) -> Result<usize, Error> {
 	if rows.is_empty() {
-		return Err("No choices are available.".into());
+		return Err(Error::new(tr("selector-no-choices")));
 	}
 	if !interactive_terminal() {
 		return choose_line(label, rows);
@@ -41,13 +40,16 @@ fn choose_line<const N: usize>(
 		println!("  {}  {row}", style(index).cyan().bold());
 	}
 	loop {
-		let input = prompt(&format!("Choose 1-{}:", rows.len()))?;
+		let input = prompt(&tr_args(
+			"selector-choose-range",
+			&[("last", FluentValue::from(rows.len() as i64))],
+		))?;
 		if let Ok(choice) = input.parse::<usize>()
 			&& (1..=rows.len()).contains(&choice)
 		{
 			return Ok(choice - 1);
 		}
-		warning("Choose one of the listed numbers.");
+		warning(tr("selector-choose-listed"));
 	}
 }
 
@@ -79,7 +81,7 @@ fn choose_interactive<const N: usize>(
 			Action::Cancelled => {
 				clear(&term, lines).map_err(term_error)?;
 				term.flush().map_err(term_error)?;
-				return Err("Cancelled.".into());
+				return Err(Error::cancelled());
 			}
 			Action::Changed | Action::Continue => {}
 		}
@@ -90,8 +92,7 @@ fn choose_interactive<const N: usize>(
 }
 
 pub(crate) fn interactive_terminal() -> bool {
-	io::stdin().is_terminal()
-		&& io::stdout().is_terminal()
+	super::can_prompt()
 		&& std::env::var_os("TERM").is_none_or(|term| term != "dumb")
 }
 
@@ -456,9 +457,16 @@ pub(crate) fn draw<const N: usize>(
 	state.ensure_visible(visible);
 	let end = (state.offset + visible).min(state.matches.len());
 	let position = if state.matches.is_empty() {
-		"0 of 0".into()
+		tr("selector-position-empty")
 	} else {
-		format!("{}–{end} of {}", state.offset + 1, state.matches.len())
+		tr_args(
+			"selector-position",
+			&[
+				("first", FluentValue::from((state.offset + 1) as i64)),
+				("last", FluentValue::from(end as i64)),
+				("total", FluentValue::from(state.matches.len() as i64)),
+			],
+		)
 	};
 	term.write_line(&truncate_str(
 		&format!("{label}  {position}"),
@@ -467,7 +475,7 @@ pub(crate) fn draw<const N: usize>(
 	))?;
 
 	let rendered = if state.matches.is_empty() {
-		term.write_line("  No matches")?;
+		term.write_line(&format!("  {}", tr("selector-no-matches")))?;
 		1
 	} else {
 		for position in state.offset..end {
@@ -494,7 +502,8 @@ pub(crate) fn draw<const N: usize>(
 		term.write_line("")?;
 	}
 
-	let prefix = format!("{} Filter or #number: ", style("?").cyan().bold());
+	let prefix =
+		format!("{} {} ", style("?").cyan().bold(), tr("selector-filter"));
 	let available = width.saturating_sub(measure_text_width(&prefix)).max(1);
 	let (input, cursor) = input_window(&state.input, state.cursor, available);
 	term.write_line(&format!("{prefix}{input}"))?;
@@ -550,7 +559,7 @@ pub(crate) fn write_choice<const N: usize>(
 }
 
 pub(crate) fn term_error(error: io::Error) -> Error {
-	Error::with_debug("Could not use the interactive terminal.", error)
+	Error::with_debug(tr("selector-terminal-error"), error)
 }
 
 #[cfg(test)]

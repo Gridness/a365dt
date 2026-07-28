@@ -4,39 +4,55 @@ use console::style;
 use indicatif::HumanDuration;
 
 use super::{Paths, Stats};
-use crate::ui;
+use crate::{l10n::tr, ui};
 
 pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
-	ui::heading("Local telemetry");
+	ui::heading(tr("telemetry-heading"));
 	ui::grid(&[
-		row("Collection", if disabled { "Disabled" } else { "Enabled" }),
-		row("Data", paths.data.display()),
-		row("Opt-out", paths.disabled.display()),
-		row("Schema", stats.schema_version),
 		row(
-			"First observation",
+			tr("telemetry-collection"),
+			tr(if disabled {
+				"telemetry-state-disabled"
+			} else {
+				"telemetry-state-enabled"
+			}),
+		),
+		row(tr("telemetry-data"), paths.data.display()),
+		row(tr("telemetry-opt-out"), paths.disabled.display()),
+		row(tr("telemetry-schema"), stats.schema_version),
+		row(
+			tr("telemetry-first-observation"),
 			format_timestamp(stats.usage.first_recorded_at),
 		),
 		row(
-			"Last observation",
+			tr("telemetry-last-observation"),
 			format_timestamp(stats.usage.last_recorded_at),
 		),
-		row("Last enabled", format_timestamp(stats.last_enabled_at)),
-		row("Last disabled", format_timestamp(stats.last_disabled_at)),
-		row("Last cleared", format_timestamp(stats.last_cleared_at)),
 		row(
-			"First download",
+			tr("telemetry-last-enabled"),
+			format_timestamp(stats.last_enabled_at),
+		),
+		row(
+			tr("telemetry-last-disabled"),
+			format_timestamp(stats.last_disabled_at),
+		),
+		row(
+			tr("telemetry-last-cleared"),
+			format_timestamp(stats.last_cleared_at),
+		),
+		row(
+			tr("telemetry-first-download"),
 			format_timestamp(stats.usage.first_download_at),
 		),
 		row(
-			"Last download",
+			tr("telemetry-last-download"),
 			format_timestamp(stats.usage.last_download_at),
 		),
 	]);
 
-	ui::heading("Collected counters");
+	ui::heading(tr("telemetry-counters-heading"));
 	if stats.usage.counters.is_empty() {
-		ui::note("No counters recorded");
+		ui::note(tr("telemetry-no-counters"));
 	} else {
 		let rows = stats
 			.usage
@@ -47,7 +63,7 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 		ui::grid(&rows);
 	}
 
-	ui::heading("Calculated statistics");
+	ui::heading(tr("telemetry-statistics-heading"));
 	ui::grid(&[
 		row(
 			"catalogue.hit_rate",
@@ -75,17 +91,17 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 		),
 	]);
 
-	ui::heading("Performance observations");
+	ui::heading(tr("telemetry-performance-heading"));
 	if stats.usage.performance.is_empty() {
-		ui::note("No performance observations recorded");
+		ui::note(tr("telemetry-no-performance"));
 	} else {
 		let mut rows = vec![[
-			style("Operation").bold().to_string(),
-			style("Count").bold().to_string(),
-			style("Total").bold().to_string(),
-			style("Average").bold().to_string(),
-			style("Median").bold().to_string(),
-			style("Work units").bold().to_string(),
+			style(tr("telemetry-operation")).bold().to_string(),
+			style(tr("telemetry-count")).bold().to_string(),
+			style(tr("telemetry-total")).bold().to_string(),
+			style(tr("telemetry-average")).bold().to_string(),
+			style(tr("telemetry-median")).bold().to_string(),
+			style(tr("telemetry-work-units")).bold().to_string(),
 		]];
 		rows.extend(stats.usage.performance.iter().map(
 			|(operation, metric)| {
@@ -100,7 +116,7 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 							.unwrap_or_default(),
 					),
 					median(metric.samples_us())
-						.map_or_else(|| "Unavailable".into(), duration_us),
+						.map_or_else(|| tr("unavailable"), duration_us),
 					metric.work_units().to_string(),
 				]
 			},
@@ -108,21 +124,21 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 		ui::grid(&rows);
 	}
 
-	ui::heading("Recent samples");
+	ui::heading(tr("telemetry-samples-heading"));
 	if stats.usage.samples.is_empty() {
-		ui::note("No samples recorded");
+		ui::note(tr("telemetry-no-samples"));
 	} else {
 		let mut rows = vec![[
-			style("Metric").bold().to_string(),
-			style("Samples").bold().to_string(),
-			style("Median").bold().to_string(),
+			style(tr("telemetry-metric")).bold().to_string(),
+			style(tr("telemetry-samples")).bold().to_string(),
+			style(tr("telemetry-median")).bold().to_string(),
 		]];
 		rows.extend(stats.usage.samples.iter().map(|(key, samples)| {
 			[
 				key.clone(),
 				samples.len().to_string(),
 				median(samples).map_or_else(
-					|| "Unavailable".into(),
+					|| tr("unavailable"),
 					|value| {
 						HumanDuration(Duration::from_millis(value)).to_string()
 					},
@@ -144,7 +160,7 @@ fn counter(stats: &Stats, key: &str) -> u64 {
 fn rate(success: u64, failure: u64) -> String {
 	let total = success.saturating_add(failure);
 	if total == 0 {
-		"Unavailable (no observations)".into()
+		tr("unavailable-no-observations")
 	} else {
 		format!("{:.1}%", success as f64 / total as f64 * 100.0)
 	}
@@ -162,7 +178,7 @@ fn duration_us(microseconds: u64) -> String {
 
 pub(crate) fn format_timestamp(timestamp: Option<u64>) -> String {
 	let Some(timestamp) = timestamp else {
-		return "Never".into();
+		return tr("never");
 	};
 	let seconds_per_day = 24 * 60 * 60;
 	let days = i64::try_from(timestamp / seconds_per_day).unwrap_or(i64::MAX);

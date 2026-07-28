@@ -24,6 +24,7 @@ mod mux;
 use crate::{
 	api::{Anime365, Episode},
 	error::Error,
+	l10n::{tr, tr_args},
 	select::PlannedRelease,
 };
 
@@ -152,11 +153,11 @@ pub async fn run(
 				let outcome = match result {
 					Some(Ok(outcome)) => outcome,
 					Some(Err(error)) => Outcome {
-						episode: "Download task".into(),
+						episode: tr("download-task"),
 						status: Status::Failed,
 						bytes: 0,
 						detail: Error::with_debug(
-							"An internal download task stopped unexpectedly.",
+							tr("download-task-error"),
 							error,
 						),
 					},
@@ -172,9 +173,9 @@ pub async fn run(
 			result = cancel.changed(), if !interrupted => {
 				interrupted = true;
 				match result {
-					Ok(()) => bars.message("Stopping cleanly; flushing partial files…"),
+					Ok(()) => bars.message(&tr("download-stopping")),
 					Err(error) => bars.message(&Error::with_debug(
-						"The cancellation channel closed; stopping active downloads.",
+						tr("download-cancel-channel-error"),
 						error,
 					).render(bars.debug)),
 				}
@@ -186,7 +187,7 @@ pub async fn run(
 			episode: job.release.episode.episode_full,
 			status: Status::Interrupted,
 			bytes: 0,
-			detail: "Not started because the download was interrupted.".into(),
+			detail: tr("download-not-started").into(),
 		}));
 	}
 	bars.overall.finish_and_clear();
@@ -230,7 +231,7 @@ async fn download_job(
 			episode,
 			status: Status::Skipped,
 			bytes: file_len(&mkv).await,
-			detail: "MKV already exists.".into(),
+			detail: tr("download-mkv-exists").into(),
 		};
 	}
 	let bar =
@@ -250,10 +251,15 @@ async fn download_job(
 						.unwrap_or(video_url);
 					subtitle_url = embed.subtitles_url.or(subtitle_url);
 				}
-				Err(error) => bar.set_message(format!(
-					"{episode} • refresh failed: {}",
-					error.render(bars.debug)
-				)),
+				Err(error) => {
+					bar.set_message(tr_args(
+						"download-refresh-failed",
+						&[
+							("episode", episode.clone().into()),
+							("error", error.render(bars.debug).into()),
+						],
+					));
+				}
 			}
 		}
 		match transfer(&api, &video_url, &video, true, &bar, &mut cancel).await
@@ -262,22 +268,23 @@ async fn download_job(
 				video_result = Some(result);
 				break;
 			}
-			Err(error) if error.error.message() == "interrupted" => {
+			Err(error) if error.error.is_interrupted() => {
 				bar.finish_and_clear();
 				return Outcome {
 					episode,
 					status: Status::Interrupted,
 					bytes: file_len(&video).await,
-					detail:
-						"Interrupted; the resumable partial file was saved."
-							.into(),
+					detail: tr("download-partial-saved").into(),
 				};
 			}
 			Err(error) if error.retry && attempt < RETRIES => {
-				bar.set_message(format!(
-					"{episode} • retry {}/{}",
-					attempt + 1,
-					RETRIES
+				bar.set_message(tr_args(
+					"download-retry",
+					&[
+						("episode", episode.clone().into()),
+						("attempt", (attempt + 1).into()),
+						("retries", RETRIES.into()),
+					],
 				));
 				sleep(error.retry_after.unwrap_or_else(|| {
 					backoff(attempt, job.release.episode.id)
@@ -307,7 +314,7 @@ async fn download_job(
 			Ok((skipped, _)) => subtitle_skipped = skipped,
 			Err(error) => {
 				sub_bar.finish_and_clear();
-				let status = if error.error.message() == "interrupted" {
+				let status = if error.error.is_interrupted() {
 					Status::Interrupted
 				} else {
 					Status::Failed
@@ -316,14 +323,19 @@ async fn download_job(
 					episode,
 					status,
 					bytes,
-					detail: error.error.context("Subtitle download failed"),
+					detail: error
+						.error
+						.context(&tr("download-subtitle-failed")),
 				};
 			}
 		}
 		sub_bar.finish_and_clear();
 	}
 	if job.mux && subtitle_url.is_some() {
-		let mux_bar = bars.spinner(&format!("{episode} • muxing"));
+		let mux_bar = bars.spinner(&tr_args(
+			"download-muxing",
+			&[("episode", episode.clone().into())],
+		));
 		let result = mux::run(&video, &subtitle, &mkv).await;
 		mux_bar.finish_and_clear();
 		if let Err(error) = result {
@@ -450,11 +462,8 @@ async fn transfer(
 		bar.set_length(total);
 	}
 	if response.status() == StatusCode::PARTIAL_CONTENT {
-		let total = total.ok_or_else(|| {
-			fatal(
-				"The media server did not provide the file size needed to resume the download.",
-			)
-		})?;
+		let total =
+			total.ok_or_else(|| fatal(tr("download-resume-size-missing")))?;
 		validate_content_range(&response, start, total)?;
 	}
 	let mut file = OpenOptions::new()
@@ -480,12 +489,12 @@ async fn transfer(
 			changed = cancel.changed() => {
 				if changed.is_err() || *cancel.borrow() {
 					file.sync_all().await.map_err(io_error)?;
-					return Err(fatal("interrupted"));
+					return Err(fatal(Error::interrupted()));
 				}
 			}
 			chunk = response.chunk() => match chunk.map_err(|error| {
 				network(Error::with_debug(
-					"The media download was interrupted by a network error.",
+					tr("download-network-interrupted"),
 					error.without_url(),
 				))
 			})? {
@@ -617,8 +626,11 @@ fn validate_content_range(
 		.unwrap_or("");
 	if !valid_content_range(value, start, total) {
 		return Err(fatal(Error::with_debug(
-			"The media server returned invalid resume information.",
-			format!("invalid Content-Range: {value}"),
+			tr("download-invalid-resume"),
+			tr_args(
+				"download-invalid-content-range",
+				&[("value", value.into())],
+			),
 		)));
 	}
 	Ok(())
@@ -644,8 +656,9 @@ fn check_status(response: &Response) -> Result<(), TransferError> {
 		|| status == StatusCode::TOO_MANY_REQUESTS
 		|| status.is_server_error();
 	Err(TransferError {
-		error: Error::new(format!(
-			"The media server rejected the download (HTTP {status})."
+		error: Error::new(tr_args(
+			"download-http-rejected",
+			&[("status", status.as_u16().into())],
 		)),
 		retry,
 		retry_after: delay,
@@ -657,17 +670,15 @@ fn verified_size(
 	received: u64,
 ) -> Result<u64, TransferError> {
 	if received == 0 {
-		return Err(retryable(
-			"The media server returned an empty file.",
-			None,
-		));
+		return Err(retryable(tr("download-empty-file"), None));
 	}
 	if let Some(expected) = expected
 		&& received != expected
 	{
 		return Err(retryable(
-			format!(
-				"The downloaded file was incomplete ({received} of {expected} bytes)."
+			tr_args(
+				"download-incomplete-file",
+				&[("received", received.into()), ("expected", expected.into())],
 			),
 			None,
 		));
@@ -685,10 +696,7 @@ fn network(error: Error) -> TransferError {
 	retryable(error, None)
 }
 fn io_error(error: std::io::Error) -> TransferError {
-	retryable(
-		Error::with_debug("Could not read or write a download file.", error),
-		None,
-	)
+	retryable(Error::with_debug(tr("download-file-io-error"), error), None)
 }
 fn fatal(error: impl Into<Error>) -> TransferError {
 	TransferError {
@@ -782,13 +790,14 @@ impl Bars {
 		let multi = MultiProgress::with_draw_target(target);
 		let overall = multi.add(ProgressBar::new(total));
 		overall.set_style(
-			ProgressStyle::with_template(
-				"{prefix:.bold.cyan} [{bar:32.cyan/blue}] {pos}/{len} episodes",
-			)
+			ProgressStyle::with_template(&format!(
+				"{{prefix:.bold.cyan}} [{{bar:32.cyan/blue}}] {{pos}}/{{len}} {}",
+				tr("progress-episodes")
+			))
 			.expect("valid style")
 			.progress_chars("━━╸"),
 		);
-		overall.set_prefix("Batch");
+		overall.set_prefix(tr("progress-batch"));
 		Self {
 			multi,
 			overall,
@@ -798,7 +807,7 @@ impl Bars {
 
 	fn transfer_bar(&self, message: &str) -> ProgressBar {
 		let bar = self.multi.add(ProgressBar::new(0));
-		bar.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg:24!} [{bar:24.cyan/blue}] {bytes:>11}/{total_bytes:11} {bytes_per_sec:>13} ETA {eta:>3}").expect("valid style").progress_chars("━━╸"));
+		bar.set_style(ProgressStyle::with_template(&format!("{{spinner:.cyan}} {{msg:24!}} [{{bar:24.cyan/blue}}] {{bytes:>11}}/{{total_bytes:11}} {{bytes_per_sec:>13}} {} {{eta:>3}}", tr("progress-eta"))).expect("valid style").progress_chars("━━╸"));
 		bar.enable_steady_tick(Duration::from_millis(100));
 		bar.set_message(message.to_owned());
 		bar

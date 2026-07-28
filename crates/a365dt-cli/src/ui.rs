@@ -9,7 +9,7 @@ use console::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::error::Error;
+use crate::{error::Error, l10n::tr};
 
 pub(crate) mod selector;
 
@@ -22,7 +22,11 @@ pub fn init() {
 	set_colors_enabled_stderr(color);
 }
 
-pub fn heading(text: &str) {
+pub fn can_prompt() -> bool {
+	io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
+pub fn heading(text: impl std::fmt::Display) {
 	println!("\n{}", style(text).bold().cyan());
 }
 
@@ -30,7 +34,7 @@ pub fn note(text: impl std::fmt::Display) {
 	println!("{} {text}", style("●").cyan());
 }
 
-pub fn spinner(text: &'static str) -> ProgressBar {
+pub fn spinner(text: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
 	let spinner = ProgressBar::new_spinner();
 	spinner.set_style(
 		ProgressStyle::with_template("{spinner:.cyan} {msg}")
@@ -62,14 +66,14 @@ pub fn alert() {
 pub fn prompt(label: &str) -> Result<String, Error> {
 	print!("{} {} ", style("?").cyan().bold(), style(label).bold());
 	io::stdout().flush().map_err(|error| {
-		Error::with_debug("Could not display the input prompt.", error)
+		Error::with_debug(tr("ui-prompt-display-error"), error)
 	})?;
 	let mut input = String::new();
 	let read = io::stdin().read_line(&mut input).map_err(|error| {
-		Error::with_debug("Could not read input from the terminal.", error)
+		Error::with_debug(tr("ui-prompt-read-error"), error)
 	})?;
 	if read == 0 {
-		return Err(Error::new("Input closed before a response was entered."));
+		return Err(Error::new(tr("ui-input-closed")));
 	}
 	Ok(input.trim().to_owned())
 }
@@ -77,13 +81,13 @@ pub fn prompt(label: &str) -> Result<String, Error> {
 pub fn secret(label: &str) -> Result<String, Error> {
 	print!("{} {} ", style("?").cyan().bold(), style(label).bold());
 	io::stdout().flush().map_err(|error| {
-		Error::with_debug("Could not display the secure input prompt.", error)
+		Error::with_debug(tr("ui-secret-display-error"), error)
 	})?;
 	let term = Term::stdout();
 	let mut input = String::new();
 	loop {
 		match term.read_key_raw().map_err(|error| {
-			Error::with_debug("Could not read secure terminal input.", error)
+			Error::with_debug(tr("ui-secret-read-error"), error)
 		})? {
 			Key::Enter => {
 				println!();
@@ -97,7 +101,7 @@ pub fn secret(label: &str) -> Result<String, Error> {
 			}
 			Key::CtrlC => {
 				println!();
-				return Err("Cancelled.".into());
+				return Err(Error::cancelled());
 			}
 			_ => {}
 		}
@@ -111,7 +115,7 @@ pub fn confirm(label: &str, default: bool) -> Result<bool, Error> {
 			"" => return Ok(default),
 			"y" | "yes" => return Ok(true),
 			"n" | "no" => return Ok(false),
-			_ => warning("Enter yes or no."),
+			_ => warning(tr("ui-confirm-yes-no")),
 		}
 	}
 }

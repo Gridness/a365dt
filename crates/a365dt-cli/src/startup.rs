@@ -9,17 +9,30 @@ use std::{
 };
 
 use console::{Style, style};
+use fluent_bundle::FluentValue;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::app_files;
+use crate::{
+	app_files,
+	l10n::{tr, tr_args},
+};
 
-const TIPS: &str = include_str!("../tips.txt");
+const TIPS: &[&str] = &[
+	"tip-query",
+	"tip-doctor",
+	"tip-ffmpeg",
+	"tip-resume",
+	"tip-jobs",
+	"tip-telemetry",
+	"tip-output",
+	"tip-cow",
+];
 const LATEST_RELEASE_URL: &str =
 	"https://api.github.com/repos/Gridness/a365dt/releases/latest";
 const CACHE_FILE: &str = "latest-release.json";
-const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub async fn show() {
@@ -34,7 +47,11 @@ pub async fn show() {
 		println!();
 	}
 	if let Some(tip) = random_tip() {
-		println!("{}: {}", style("Tip").bold(), render_markdown(tip));
+		println!(
+			"{}: {}",
+			style(tr("tip-label")).bold(),
+			render_markdown(&tip)
+		);
 		println!();
 	}
 }
@@ -144,13 +161,14 @@ fn update_from(installed: &str, release: Release) -> Option<Update> {
 fn show_update(update: &Update) {
 	println!(
 		"{} {} {} {}",
-		style("💫 Upgrade available:").blue().bold(),
+		style(tr("upgrade-available")).blue().bold(),
 		style(format!("v{}", update.installed)).white(),
 		style("→").green(),
 		style(format!("v{}", update.available)).white()
 	);
 	println!(
-		"   Upgrade: {}",
+		"   {}: {}",
+		tr("upgrade-label"),
 		upgrade_instruction(
 			installation_channel(),
 			update.release_url.as_str()
@@ -180,7 +198,13 @@ fn upgrade_instruction(
 			} else {
 				"a365dt"
 			};
-			format!("Download {release_url} and replace {executable}.")
+			tr_args(
+				"upgrade-manual",
+				&[
+					("url", FluentValue::from(release_url)),
+					("executable", FluentValue::from(executable)),
+				],
+			)
 		}
 	}
 }
@@ -239,21 +263,16 @@ fn normalized_path(path: &Path) -> String {
 		.to_ascii_lowercase()
 }
 
-fn random_tip() -> Option<&'static str> {
-	let tips = TIPS
-		.lines()
-		.map(str::trim)
-		.filter(|tip| !tip.is_empty())
-		.collect::<Vec<_>>();
-	if tips.is_empty() {
+fn random_tip() -> Option<String> {
+	if TIPS.is_empty() {
 		return None;
 	}
 	let now = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
 		.map_or(0, |duration| duration.as_nanos());
 	let index =
-		RandomState::new().hash_one((now, process::id())) as usize % tips.len();
-	Some(tips[index])
+		RandomState::new().hash_one((now, process::id())) as usize % TIPS.len();
+	Some(tr(TIPS[index]))
 }
 
 fn render_markdown(markdown: &str) -> String {

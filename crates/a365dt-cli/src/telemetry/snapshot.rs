@@ -6,6 +6,7 @@ use super::{
 	Error, Operation, Paths, Recorder, is_disabled, read_stats_locked,
 	storage_error,
 };
+use crate::l10n::tr;
 
 pub struct Snapshot {
 	pub enabled: bool,
@@ -45,7 +46,7 @@ pub fn capture() -> Result<Snapshot, Error> {
 		Err(error) if error.kind() == io::ErrorKind::NotFound => None,
 		Err(error) => {
 			return Err(storage_error(
-				"Could not inspect the local telemetry data.",
+				&tr("telemetry-data-inspect-error"),
 				error,
 			));
 		}
