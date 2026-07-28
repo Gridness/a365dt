@@ -7,7 +7,7 @@ help:
     just -l
 
 # `a365dt-dev`
-a365dt-dev *args:
+a365dt *args:
     cargo run --bin a365dt -- {{ args }}
 
 fmt:
@@ -36,6 +36,9 @@ bench *args:
 
 bench-smoke:
     just bench -- --test
+
+check:
+    cargo check
 
 build-release:
     cargo build --release
