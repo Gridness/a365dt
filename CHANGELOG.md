@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/Gridness/a365dt/compare/v0.6.1...v0.6.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* **cli:** honor Anime365 search aliases ([#20](https://github.com/Gridness/a365dt/issues/20)) ([176a7cf](https://github.com/Gridness/a365dt/commit/176a7cfc7894d8ab6e1851b3a6179a9e4de684be))
+
 ## [0.6.1](https://github.com/Gridness/a365dt/compare/v0.6.0...v0.6.1) (2026-07-28)
 
 
