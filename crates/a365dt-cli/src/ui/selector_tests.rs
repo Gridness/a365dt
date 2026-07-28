@@ -1,7 +1,7 @@
 use pretty_assertions::assert_eq;
 
 use super::{State, input_window, query_and_choice};
-use crate::search::Search;
+use crate::{search::Search, telemetry::Recorder};
 
 fn state(count: usize) -> State {
 	let rows = (1..=count)
@@ -67,7 +67,7 @@ fn parses_filtered_choices_and_numeric_queries() {
 #[test]
 fn prioritizes_rows_that_do_not_match_the_query() {
 	let rows = [["Alpha".into()], ["Jujutsu Kaisen".into()]];
-	let mut state = State::from_rows(&rows, "jjk".into());
+	let mut state = State::from_rows(&rows, "jjk".into(), Recorder::default());
 
 	state.prefer(vec![1, 1]);
 
@@ -84,7 +84,11 @@ fn keeps_the_cursor_visible_in_long_unicode_input() {
 #[test]
 fn preserves_the_query_when_live_results_arrive() {
 	let initial = [["Unrelated".into()]];
-	let mut state = State::from_rows(&initial, "битва магическая".into());
+	let mut state = State::from_rows(
+		&initial,
+		"битва магическая".into(),
+		Recorder::default(),
+	);
 	assert_eq!((state.query(), state.choice()), ("битва магическая", None));
 
 	let refreshed = [["Магическая битва".into()]];

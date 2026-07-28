@@ -62,6 +62,23 @@ a365dt "Frieren"
 a365dt "https://anime365.ru/catalog/road-of-naruto-30887/"
 ```
 
+Use `--query` when a title is also a command name:
+
+```console
+a365dt --query telemetry
+a365dt --query cache prune
+```
+
+Command names followed by more title words remain searches:
+
+```console
+a365dt cache this
+a365dt telemetry this
+```
+
+Likely command or subcommand typos show the nearest commands instead.
+Use `--query` to bypass that check and force a title search.
+
 Choose an output directory and the number of concurrent downloads:
 
 ```console
@@ -76,8 +93,30 @@ Other commands:
 ```console
 a365dt completions zsh
 a365dt cache prune
+a365dt doctor
+a365dt doctor --debug
+a365dt telemetry show
+a365dt telemetry disable
 a365dt --help
 ```
+
+Local telemetry is enabled by default and records aggregate command,
+catalogue, and download outcomes without titles, queries, identifiers, URLs,
+paths, or tokens. It is never transmitted. Use `a365dt telemetry show` to
+inspect every collected field, `disable` or `enable` to change collection
+state, and `clear` to erase the history without changing that state.
+Performance observations cover Anime365 API and media requests, Series cache
+retrieval and storage, and local Series search indexing and ranking. They
+retain lifetime counts and totals plus only the latest 101 latency samples.
+A catalogue hit means the selected Series was already in the persisted
+catalogue when search began. Download success includes both downloaded and
+previously verified, skipped Episodes.
+
+`a365dt doctor` checks Anime365 reachability and latency, cache freshness,
+local telemetry health, recent performance, usage statistics, and build
+details. `--debug` adds paths, raw per-operation latency, collection dates,
+and a local telemetry-overhead benchmark. Statuses use `✓`, `●`, `○`, and
+`✗`; unavailable fields include the command or action needed to restore them.
 
 ## Development
 

@@ -20,6 +20,10 @@ _Avoid_: Acronym, abbreviation
 The collection of Series available for discovery on Anime365.
 _Avoid_: Title index, title database
 
+**Catalogue hit**:
+A Series selection that reuses a Series already present in the persisted Series catalogue when the search starts. Direct URLs, cancelled searches, and failed searches are neither hits nor misses.
+_Avoid_: Cache hit, API cache hit
+
 **Episode**:
 A selectable installment of a Series, identified by its Anime365 episode ID and displayed episode label.
 _Avoid_: File, video

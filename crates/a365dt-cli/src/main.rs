@@ -1,5 +1,7 @@
 mod api;
 mod auth;
+mod command_line;
+mod doctor;
 mod download;
 mod error;
 mod poster;
@@ -7,6 +9,7 @@ mod search;
 mod select;
 mod series_cache;
 mod series_search;
+mod telemetry;
 mod ui;
 
 #[cfg(test)]
@@ -51,6 +54,15 @@ struct Args {
 	#[arg(value_name = "QUERY_OR_URL", num_args = 0..)]
 	query: Vec<String>,
 
+	/// Search for a title even when it matches a command name.
+	#[arg(
+		long = "query",
+		value_name = "QUERY",
+		num_args = 1..,
+		conflicts_with = "query"
+	)]
+	forced_query: Vec<String>,
+
 	#[arg(short, long, default_value = ".", value_name = "DIR")]
 	output: PathBuf,
 
@@ -58,7 +70,7 @@ struct Args {
 	jobs: NonZeroUsize,
 
 	/// Show technical error details.
-	#[arg(long)]
+	#[arg(long, global = true)]
 	debug: bool,
 }
 
@@ -71,20 +83,100 @@ enum Commands {
 	},
 
 	/// Generate shell completions.
-	Completions { shell: Shell },
+	Completions {
+		#[arg(value_name = "SHELL", num_args = 1..)]
+		arguments: Vec<String>,
+	},
+
+	/// Check a365dt, Anime365, cache, and telemetry health.
+	Doctor {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
+
+	/// Inspect or control local usage telemetry.
+	Telemetry {
+		#[command(subcommand)]
+		command: TelemetryCommand,
+	},
 }
 
 #[derive(Subcommand)]
 enum CacheCommand {
 	/// Clear the local cache.
-	Prune,
+	Prune {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
+
+	#[command(external_subcommand)]
+	Query(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum TelemetryCommand {
+	/// Clear collected telemetry without changing collection state.
+	Clear {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
+
+	/// Stop collecting local telemetry.
+	Disable {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
+
+	/// Resume collecting local telemetry.
+	Enable {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
+
+	/// Show every collected field and its current value.
+	Show {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
+
+	#[command(external_subcommand)]
+	Query(Vec<String>),
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-	let args = Args::parse();
+	let mut args = Args::parse();
 	ui::init();
 	let debug = args.debug;
+	if !args.forced_query.is_empty() && args.command.is_some() {
+		ui::failure(
+			"`--query` cannot be combined with a command. Remove the command or search terms.",
+		);
+		return ExitCode::FAILURE;
+	}
+	let suggestions = command_line::suggestions(&args);
+	if !suggestions.is_empty() {
+		ui::failure(command_line::suggestion_message(&suggestions));
+		return ExitCode::FAILURE;
+	}
+	command_line::route_title_query(&mut args);
+	if let Some(Commands::Telemetry { command }) = args.command.as_ref() {
+		return match run_telemetry(command) {
+			Ok(()) => ExitCode::SUCCESS,
+			Err(error) => {
+				ui::failure(error.render(debug));
+				ExitCode::FAILURE
+			}
+		};
+	}
+	let command = telemetry_command(&args);
+	let telemetry = match telemetry::Recorder::new() {
+		Ok(telemetry) => telemetry,
+		Err(error) => {
+			ui::warning(error.render(debug));
+			telemetry::Recorder::default()
+		}
+	};
 	let active_download = Arc::new(Mutex::new(None));
 	let interrupt_download = Arc::clone(&active_download);
 	drop(tokio::spawn(async move {
@@ -105,21 +197,80 @@ async fn main() -> ExitCode {
 			}
 		}
 	}));
-	if let Some(Commands::Completions { shell }) = args.command.as_ref() {
+	let result = if let Some(Commands::Completions { arguments }) =
+		args.command.as_ref()
+	{
 		generate(
-			*shell,
+			completion_shell(arguments)
+				.expect("invalid completion shells return to title search"),
 			&mut Args::command(),
 			"a365dt",
 			&mut std::io::stdout(),
 		);
-		return ExitCode::SUCCESS;
-	}
-	match run(args, active_download).await {
-		Ok(code) => code,
-		Err(error) => {
-			ui::failure(error.render(debug));
-			ExitCode::FAILURE
+		Ok(ExitCode::SUCCESS)
+	} else if let Some(Commands::Doctor { .. }) = args.command.as_ref() {
+		Ok(doctor::run(debug).await)
+	} else {
+		run(args, active_download, &telemetry).await
+	};
+	let (code, outcome) = match result {
+		Ok(code) if code == ExitCode::SUCCESS => {
+			(code, telemetry::CommandOutcome::Success)
 		}
+		Ok(code) if code == ExitCode::from(130) => {
+			(code, telemetry::CommandOutcome::Cancelled)
+		}
+		Ok(code) => (code, telemetry::CommandOutcome::Failure),
+		Err(error) => {
+			let outcome = if error.message() == "Cancelled." {
+				telemetry::CommandOutcome::Cancelled
+			} else {
+				telemetry::CommandOutcome::Failure
+			};
+			ui::failure(error.render(debug));
+			(ExitCode::FAILURE, outcome)
+		}
+	};
+	telemetry.record_command(command, outcome);
+	if let Err(error) = telemetry.flush() {
+		ui::warning(error.render(debug));
+	}
+	code
+}
+
+fn completion_shell(arguments: &[String]) -> Option<Shell> {
+	let [shell] = arguments else {
+		return None;
+	};
+	shell.parse().ok()
+}
+
+fn run_telemetry(command: &TelemetryCommand) -> Result<(), Error> {
+	match command {
+		TelemetryCommand::Clear { .. } => telemetry::clear(),
+		TelemetryCommand::Disable { .. } => telemetry::disable(),
+		TelemetryCommand::Enable { .. } => telemetry::enable(),
+		TelemetryCommand::Show { .. } => telemetry::show(),
+		TelemetryCommand::Query(_) => {
+			unreachable!("telemetry queries return to title search")
+		}
+	}
+}
+
+fn telemetry_command(args: &Args) -> telemetry::Command {
+	match args.command {
+		Some(Commands::Cache {
+			command: CacheCommand::Prune { .. },
+		}) => telemetry::Command::CachePrune,
+		Some(Commands::Cache {
+			command: CacheCommand::Query(_),
+		}) => unreachable!("cache queries return to title search"),
+		Some(Commands::Completions { .. }) => telemetry::Command::Completions,
+		Some(Commands::Doctor { .. }) => telemetry::Command::Doctor,
+		Some(Commands::Telemetry { .. }) => {
+			unreachable!("telemetry commands return before recording")
+		}
+		None => telemetry::Command::Download,
 	}
 }
 
@@ -136,10 +287,11 @@ fn cancel_download(
 async fn run(
 	args: Args,
 	active_download: Arc<Mutex<Option<watch::Sender<bool>>>>,
+	telemetry: &telemetry::Recorder,
 ) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
 	if let Some(Commands::Cache {
-		command: CacheCommand::Prune,
+		command: CacheCommand::Prune { .. },
 	}) = args.command
 	{
 		series_cache::prune().map_err(|error| {
@@ -149,13 +301,21 @@ async fn run(
 		return Ok(ExitCode::SUCCESS);
 	}
 	let access_token = auth::access_token()?;
-	let api = Anime365::new(access_token.value().to_owned())?;
+	let api =
+		Anime365::new(access_token.value().to_owned(), telemetry.clone())?;
 	ui::note("Validating Anime365 access…");
 	api.validate().await?;
 	ui::success("Authenticated");
 	auth::store_if_requested(&access_token)?;
 
-	let series = series_search::choose(&api, args.query.join(" ")).await?;
+	let query = if args.forced_query.is_empty() {
+		args.query.join(" ")
+	} else {
+		args.forced_query.join(" ")
+	};
+	let selected = series_search::choose(&api, query, telemetry).await?;
+	telemetry.record_catalogue(selected.catalogue);
+	let series = selected.series;
 	ui::success(format!("Selected {}", series.title));
 	poster::show(&api, &series).await;
 	let episodes = select::choose_episodes(&series.episodes)?;
@@ -214,6 +374,7 @@ async fn run(
 		download::run(api, jobs, args.jobs.get(), args.debug, cancellation)
 			.await;
 	*active_download.lock().unwrap() = None;
+	telemetry.record_download(&summary);
 	print_summary(&summary, &directory, args.debug);
 	ui::alert();
 	let interrupted = summary

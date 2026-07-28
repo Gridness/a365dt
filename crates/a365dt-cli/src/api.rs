@@ -3,7 +3,10 @@ use std::time::Duration;
 use reqwest::{Client, Method, RequestBuilder, Response, Url, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::error::Error;
+use crate::{
+	error::Error,
+	telemetry::{Operation, Recorder},
+};
 
 const ASSET_ORIGIN: &str = "https://smotret-anime.org";
 const API: &str = "https://anime365.ru/api";
@@ -16,6 +19,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Anime365 {
 	http: Client,
 	token: String,
+	telemetry: Recorder,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -80,7 +84,7 @@ struct ApiError {
 }
 
 impl Anime365 {
-	pub fn new(token: String) -> Result<Self> {
+	pub fn new(token: String, telemetry: Recorder) -> Result<Self> {
 		let http = Client::builder()
 			.https_only(true)
 			.connect_timeout(Duration::from_secs(30))
@@ -92,13 +96,22 @@ impl Anime365 {
 					error,
 				)
 			})?;
-		Ok(Self { http, token })
+		Ok(Self {
+			http,
+			token,
+			telemetry,
+		})
 	}
 
 	pub async fn validate(&self) -> Result<()> {
-		self.get::<serde::de::IgnoredAny>("/me", &[], true)
-			.await
-			.map(drop)
+		self.get::<serde::de::IgnoredAny>(
+			"/me",
+			&[],
+			true,
+			Operation::ApiValidate,
+		)
+		.await
+		.map(drop)
 	}
 
 	pub async fn search(&self, query: &str) -> Result<Vec<Series>> {
@@ -110,13 +123,19 @@ impl Anime365 {
 				("fields", SERIES_FIELDS.into()),
 			],
 			false,
+			Operation::ApiSearch,
 		)
 		.await
 	}
 
 	pub async fn series(&self, id: u64) -> Result<Option<Series>> {
-		self.get_optional(&format!("/series/{id}"), &[], false)
-			.await
+		self.get_optional(
+			&format!("/series/{id}"),
+			&[],
+			false,
+			Operation::ApiSeries,
+		)
+		.await
 	}
 
 	pub async fn series_page(&self, offset: usize) -> Result<Vec<Series>> {
@@ -128,6 +147,7 @@ impl Anime365 {
 				("fields", SERIES_FIELDS.into()),
 			],
 			false,
+			Operation::ApiSeriesPage,
 		)
 		.await
 	}
@@ -152,6 +172,7 @@ impl Anime365 {
 						),
 					],
 					false,
+					Operation::ApiTranslations,
 				)
 				.await?;
 			let done = page.len() < 1000;
@@ -166,12 +187,24 @@ impl Anime365 {
 	}
 
 	pub async fn embed(&self, translation_id: u64) -> Result<Embed> {
-		self.get(&format!("/translations/embed/{translation_id}"), &[], true)
-			.await
+		self.get(
+			&format!("/translations/embed/{translation_id}"),
+			&[],
+			true,
+			Operation::ApiEmbed,
+		)
+		.await
 	}
 
 	pub async fn asset(&self, method: Method, url: &str) -> Result<Response> {
-		send_asset(self.asset_request(method, url)?).await
+		let operation = if method == Method::HEAD {
+			Operation::AssetHead
+		} else {
+			Operation::AssetGet
+		};
+		let request = self.asset_request(method, url)?;
+		let _measurement = self.telemetry.measure(operation);
+		send_asset(request).await
 	}
 
 	pub async fn asset_from(
@@ -180,12 +213,12 @@ impl Anime365 {
 		start: u64,
 		validator: &str,
 	) -> Result<Response> {
-		send_asset(
-			self.asset_request(Method::GET, url)?
-				.header(header::RANGE, format!("bytes={start}-"))
-				.header(header::IF_RANGE, validator),
-		)
-		.await
+		let request = self
+			.asset_request(Method::GET, url)?
+			.header(header::RANGE, format!("bytes={start}-"))
+			.header(header::IF_RANGE, validator);
+		let _measurement = self.telemetry.measure(Operation::AssetResume);
+		send_asset(request).await
 	}
 
 	fn asset_request(
@@ -206,8 +239,9 @@ impl Anime365 {
 		path: &str,
 		query: &[(&str, String)],
 		authenticated: bool,
+		operation: Operation,
 	) -> Result<T> {
-		self.get_optional(path, query, authenticated)
+		self.get_optional(path, query, authenticated, operation)
 			.await?
 			.ok_or_else(|| {
 				Error::new("Anime365 did not return the requested API data.")
@@ -219,6 +253,7 @@ impl Anime365 {
 		path: &str,
 		query: &[(&str, String)],
 		authenticated: bool,
+		operation: Operation,
 	) -> Result<Option<T>> {
 		let mut request = self
 			.http
@@ -228,6 +263,7 @@ impl Anime365 {
 		if authenticated {
 			request = request.query(&[("access_token", &self.token)]);
 		}
+		let _measurement = self.telemetry.measure(operation);
 		let response = request.send().await.map_err(|error| {
 			request_error("The request to the Anime365 API failed.", error)
 		})?;

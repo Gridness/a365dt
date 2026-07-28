@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{api::Series, search::normalize_query};
 
-const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Cache {
@@ -89,7 +89,7 @@ fn cache_directory() -> Option<PathBuf> {
 		.map(|directories| directories.cache_dir().to_owned())
 }
 
-fn cache_path() -> Option<PathBuf> {
+pub(crate) fn cache_path() -> Option<PathBuf> {
 	cache_directory().map(|directory| directory.join("series.json"))
 }
 

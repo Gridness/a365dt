@@ -8,7 +8,11 @@ use console::{
 };
 
 use super::{alert, aligned_rows, prompt, warning};
-use crate::{error::Error, search::Search};
+use crate::{
+	error::Error,
+	search::Search,
+	telemetry::{Operation, Recorder},
+};
 
 const MAX_VISIBLE: usize = 10;
 
@@ -108,10 +112,15 @@ pub(crate) struct State {
 	matches: Vec<usize>,
 	selected: usize,
 	offset: usize,
+	telemetry: Recorder,
 }
 
 impl State {
 	fn new(search: Search) -> Self {
+		Self::with_telemetry(search, Recorder::default())
+	}
+
+	fn with_telemetry(search: Search, telemetry: Recorder) -> Self {
 		let matches = search.ranked("");
 		Self {
 			search,
@@ -121,14 +130,20 @@ impl State {
 			matches,
 			selected: 0,
 			offset: 0,
+			telemetry,
 		}
 	}
 
 	pub(crate) fn from_rows<const N: usize>(
 		rows: &[[String; N]],
 		input: String,
+		telemetry: Recorder,
 	) -> Self {
-		let mut state = Self::new(Search::new(rows));
+		let measurement =
+			telemetry.measure_items(Operation::SearchIndex, rows.len());
+		let search = Search::new(rows);
+		drop(measurement);
+		let mut state = Self::with_telemetry(search, telemetry);
 		state.cursor = input.len();
 		state.input = input;
 		state.refresh();
@@ -138,7 +153,11 @@ impl State {
 	pub(crate) fn replace<const N: usize>(&mut self, rows: &[[String; N]]) {
 		let selected = self.matches.get(self.selected).copied();
 		let screen_row = self.selected.saturating_sub(self.offset);
+		let measurement = self
+			.telemetry
+			.measure_items(Operation::SearchIndex, rows.len());
 		self.search = Search::new(rows);
+		drop(measurement);
 		self.matches = self.ranked();
 		if let Some(selected) = selected
 			&& let Some(position) =
@@ -326,6 +345,9 @@ impl State {
 	}
 
 	fn ranked(&self) -> Vec<usize> {
+		let _measurement = self
+			.telemetry
+			.measure_items(Operation::SearchRank, self.search.len());
 		let query = query_and_choice(&self.input).0;
 		let mut seen = HashSet::new();
 		self.preferred

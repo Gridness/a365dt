@@ -33,3 +33,11 @@ pretty_assertions.workspace = true
 [[bench]]
 name = "search"
 harness = false
+
+[[bench]]
+name = "doctor"
+harness = false
+
+[[bench]]
+name = "telemetry"
+harness = false

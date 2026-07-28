@@ -1,0 +1,3 @@
+# Compose doctor from independent health checks
+
+`a365dt doctor` builds one report from independent Anime365, Series cache, local telemetry, performance, and build checks. Every check owns a severity, concise value, and optional remedy; rendering and overall exit status are derived from those checks so new health issues can be added without changing the report control flow. Healthy, informational, warning, and error states render as `✓`, `○`, `●`, and `✗`; only errors produce a failing exit status. The default report summarizes actionable health and averages, while `--debug` adds paths, thresholds, raw per-operation observations, collection dates, and an isolated local benchmark of telemetry overhead.
