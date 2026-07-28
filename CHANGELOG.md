@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Gridness/a365dt/compare/v0.6.3...v0.7.0) (2026-07-28)
+
+
+### Features
+
+* **cli:** add local diagnostics and release guidance ([#24](https://github.com/Gridness/a365dt/issues/24)) ([e6837b3](https://github.com/Gridness/a365dt/commit/e6837b3b2373baa62b9a1702c2475e4deebdfc26))
+
 ## [0.6.3](https://github.com/Gridness/a365dt/compare/v0.6.2...v0.6.3) (2026-07-28)
 
 
