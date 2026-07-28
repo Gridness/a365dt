@@ -54,7 +54,7 @@ fn choose_interactive<const N: usize>(
 	let mut lines = draw(&term, label, rows, &mut layout, &mut state)
 		.map_err(term_error)?;
 	loop {
-		let key = match term.read_key() {
+		let key = match term.read_key_raw() {
 			Ok(key) => key,
 			Err(error) => {
 				clear(&term, lines).map_err(term_error)?;
