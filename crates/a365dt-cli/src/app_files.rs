@@ -2,8 +2,14 @@ use std::{fs, io, path::PathBuf};
 
 use directories::ProjectDirs;
 
+pub(crate) const APPLICATION_ID: &str = if cfg!(debug_assertions) {
+	"a365dt-dev"
+} else {
+	"a365dt"
+};
+
 pub fn directories() -> Option<ProjectDirs> {
-	ProjectDirs::from("", "", "a365dt")
+	ProjectDirs::from("", "", APPLICATION_ID)
 }
 
 pub fn cache_directory() -> Option<PathBuf> {

@@ -9,6 +9,8 @@ use security_framework::{
 	passwords::{delete_generic_password, set_generic_password},
 };
 
+#[cfg(target_os = "macos")]
+use crate::app_files;
 use crate::{error::Error, ui};
 
 const ACCESS_TOKEN_URL: &str =
@@ -20,7 +22,7 @@ ANIME365_ACCESS_TOKEN process environment variable."#;
 #[cfg(target_os = "macos")]
 const KEYCHAIN_ITEM: &str = "anime365-access-token";
 #[cfg(target_os = "macos")]
-const KEYCHAIN_ACCOUNT: &str = "a365dt";
+const KEYCHAIN_ACCOUNT: &str = app_files::APPLICATION_ID;
 #[cfg(target_os = "macos")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
@@ -79,6 +81,7 @@ fn keychain_token() -> Option<String> {
 	let result = search
 		.class(ItemClass::generic_password())
 		.service(KEYCHAIN_ITEM)
+		.account(KEYCHAIN_ACCOUNT)
 		.load_data(true)
 		.search();
 	match result {

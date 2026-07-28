@@ -37,6 +37,7 @@ Run `just fmt` (in the `crates` directory) automatically after you have finished
 1. Do not run `cargo test` directly. Use `just test` so test execution follows the repo defaults.
 2. Run the test for the specific project that was changed. For example, if changes were made in `crates/a365dt-cli`, run `just test -p a365dt-cli`.
 3. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `just test`. Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
+4. Never run release profile to check and test changes. Always use `a365dt-dev`.
 
 Before initializing a large change to `crates`, run `just fix -p <project>` (in `crates` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run just fix without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
 

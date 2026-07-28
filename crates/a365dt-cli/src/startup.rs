@@ -196,7 +196,10 @@ fn installation_channel_from_path(
 	executable: &Path,
 	cargo_bin_directories: &[PathBuf],
 ) -> InstallationChannel {
-	let executable = normalized_path(executable);
+	let executable = executable
+		.canonicalize()
+		.unwrap_or_else(|_| executable.into());
+	let executable = normalized_path(&executable);
 	if executable.contains("/cellar/a365dt/") {
 		return InstallationChannel::Homebrew;
 	}
