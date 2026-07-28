@@ -1,4 +1,5 @@
 mod api;
+mod app_files;
 mod auth;
 mod command_line;
 mod doctor;
@@ -94,6 +95,13 @@ enum Commands {
 		query: Vec<String>,
 	},
 
+	/// Permanently remove all local a365dt application data.
+	Purge {
+		/// Purge without asking for confirmation.
+		#[arg(short, long)]
+		yes: bool,
+	},
+
 	/// Inspect or control local usage telemetry.
 	Telemetry {
 		#[command(subcommand)]
@@ -160,6 +168,45 @@ async fn main() -> ExitCode {
 		return ExitCode::FAILURE;
 	}
 	command_line::route_title_query(&mut args);
+	if let Some(Commands::Purge { yes }) = args.command.as_ref() {
+		let confirmed = if *yes {
+			true
+		} else {
+			match ui::confirm(
+				&ui::red(
+					"Permanently remove all local a365dt application data and saved credentials?",
+				),
+				false,
+			) {
+				Ok(confirmed) => confirmed,
+				Err(error) => {
+					ui::failure(error.render(debug));
+					return ExitCode::FAILURE;
+				}
+			}
+		};
+		if !confirmed {
+			ui::note("Purge cancelled.");
+			return ExitCode::SUCCESS;
+		}
+		let files = app_files::purge().map_err(|error| {
+			Error::with_debug(
+				"Could not remove all local a365dt application files.",
+				error,
+			)
+		});
+		let token = auth::remove_stored_token();
+		return match files.and(token) {
+			Ok(()) => {
+				ui::success("Local a365dt application data removed");
+				ExitCode::SUCCESS
+			}
+			Err(error) => {
+				ui::failure(error.render(debug));
+				ExitCode::FAILURE
+			}
+		};
+	}
 	if let Some(Commands::Telemetry { command }) = args.command.as_ref() {
 		return match run_telemetry(command) {
 			Ok(()) => ExitCode::SUCCESS,
@@ -267,6 +314,9 @@ fn telemetry_command(args: &Args) -> telemetry::Command {
 		}) => unreachable!("cache queries return to title search"),
 		Some(Commands::Completions { .. }) => telemetry::Command::Completions,
 		Some(Commands::Doctor { .. }) => telemetry::Command::Doctor,
+		Some(Commands::Purge { .. }) => {
+			unreachable!("purge returns before recording")
+		}
 		Some(Commands::Telemetry { .. }) => {
 			unreachable!("telemetry commands return before recording")
 		}

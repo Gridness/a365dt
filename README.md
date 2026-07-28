@@ -95,10 +95,15 @@ a365dt completions zsh
 a365dt cache prune
 a365dt doctor
 a365dt doctor --debug
+a365dt purge
+a365dt purge --yes
 a365dt telemetry show
 a365dt telemetry disable
 a365dt --help
 ```
+
+`purge` removes a365dt cache, configuration, local data, and the saved macOS
+Keychain token. It does not remove downloaded media or the installed program.
 
 Local telemetry is enabled by default and records aggregate command,
 catalogue, and download outcomes without titles, queries, identifiers, URLs,

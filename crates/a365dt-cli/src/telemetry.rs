@@ -7,10 +7,10 @@ use std::{
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+	app_files,
 	download::{self, Status},
 	error::Error,
 	ui,
@@ -268,10 +268,9 @@ impl Drop for Measurement<'_> {
 
 impl Paths {
 	fn discover() -> Result<Self, Error> {
-		let directories =
-			ProjectDirs::from("", "", "a365dt").ok_or_else(|| {
-				Error::new("Could not resolve the local telemetry directory.")
-			})?;
+		let directories = app_files::directories().ok_or_else(|| {
+			Error::new("Could not resolve the local telemetry directory.")
+		})?;
 		let data_directory = directories.data_local_dir();
 		Ok(Self {
 			data: data_directory.join("telemetry.json"),

@@ -6,7 +6,7 @@ use std::{
 #[cfg(target_os = "macos")]
 use security_framework::{
 	item::{ItemClass, ItemSearchOptions, SearchResult},
-	passwords::set_generic_password,
+	passwords::{delete_generic_password, set_generic_password},
 };
 
 use crate::{error::Error, ui};
@@ -134,6 +134,23 @@ pub(crate) fn store_if_requested(
 pub(crate) fn store_if_requested(
 	_access_token: &AccessToken,
 ) -> Result<(), Error> {
+	Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn remove_stored_token() -> Result<(), Error> {
+	match delete_generic_password(KEYCHAIN_ITEM, KEYCHAIN_ACCOUNT) {
+		Ok(()) => Ok(()),
+		Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+		Err(error) => Err(Error::with_debug(
+			"Could not remove the Anime365 access token from macOS Keychain.",
+			error,
+		)),
+	}
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn remove_stored_token() -> Result<(), Error> {
 	Ok(())
 }
 

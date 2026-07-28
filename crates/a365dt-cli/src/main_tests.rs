@@ -53,6 +53,22 @@ fn parses_telemetry_control_commands() {
 }
 
 #[test]
+fn parses_purge_confirmation_options() {
+	for (arguments, expected) in [
+		(&["a365dt", "purge"][..], false),
+		(&["a365dt", "purge", "-y"][..], true),
+		(&["a365dt", "purge", "--yes"][..], true),
+	] {
+		let args = Args::try_parse_from(arguments.iter().copied()).unwrap();
+
+		assert!(matches!(
+			args.command,
+			Some(Commands::Purge { yes }) if yes == expected
+		));
+	}
+}
+
+#[test]
 fn routes_unknown_command_arguments_through_title_search() {
 	for arguments in [
 		&["a365dt", "cache", "this"][..],
