@@ -798,7 +798,7 @@ impl Bars {
 
 	fn transfer_bar(&self, message: &str) -> ProgressBar {
 		let bar = self.multi.add(ProgressBar::new(0));
-		bar.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg:24!} [{bar:24.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} ETA {eta}").expect("valid style").progress_chars("━━╸"));
+		bar.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg:24!} [{bar:24.cyan/blue}] {bytes:>11}/{total_bytes:11} {bytes_per_sec:>13} ETA {eta:>3}").expect("valid style").progress_chars("━━╸"));
 		bar.enable_steady_tick(Duration::from_millis(100));
 		bar.set_message(message.to_owned());
 		bar
