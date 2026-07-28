@@ -90,6 +90,7 @@ async fn main() -> ExitCode {
 	drop(tokio::spawn(async move {
 		match signal::ctrl_c().await {
 			Ok(()) => {
+				eprintln!();
 				ui::failure("Cancelled.");
 				if !cancel_download(&interrupt_download) {
 					process::exit(130);
