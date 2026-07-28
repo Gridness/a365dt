@@ -145,9 +145,9 @@ fn show_update(update: &Update) {
 	println!(
 		"{} {} {} {}",
 		style("💫 Upgrade available:").blue().bold(),
-		style(format!("v{}", update.installed)).blue(),
+		style(format!("v{}", update.installed)).white(),
 		style("→").green(),
-		style(format!("v{}", update.available)).blue()
+		style(format!("v{}", update.available)).white()
 	);
 	println!(
 		"   Upgrade: {}",
