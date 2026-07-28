@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/Gridness/a365dt/compare/v0.6.2...v0.6.3) (2026-07-28)
+
+
+### Bug Fixes
+
+* **cli:** separate cancellation message from prompt ([#22](https://github.com/Gridness/a365dt/issues/22)) ([b89021d](https://github.com/Gridness/a365dt/commit/b89021df93b3c52ef8aae59272c7fa6ab3685824))
+
 ## [0.6.2](https://github.com/Gridness/a365dt/compare/v0.6.1...v0.6.2) (2026-07-28)
 
 
