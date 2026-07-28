@@ -38,19 +38,19 @@ fn scrolls_at_edges_and_wraps_across_all_results() {
 }
 
 #[test]
-fn parses_filtered_and_bare_numeric_choices() {
+fn parses_filtered_choices_and_numeric_queries() {
 	assert_eq!(
 		[
-			query_and_choice("dub ru #2", 10),
-			query_and_choice("#3", 10),
-			query_and_choice("2", 10),
-			query_and_choice("1080", 10),
-			query_and_choice("title #wrong", 10),
+			query_and_choice("dub ru #2"),
+			query_and_choice("#3"),
+			query_and_choice("2"),
+			query_and_choice("1080"),
+			query_and_choice("title #wrong"),
 		],
 		[
 			("dub ru", Some(2)),
 			("", Some(3)),
-			("", None),
+			("2", None),
 			("1080", None),
 			("title #wrong", None),
 		]
@@ -62,6 +62,16 @@ fn parses_filtered_and_bare_numeric_choices() {
 		state.insert(character);
 	}
 	assert_eq!((state.matches.clone(), state.choice()), (vec![0], Some(0)));
+}
+
+#[test]
+fn prioritizes_rows_that_do_not_match_the_query() {
+	let rows = [["Alpha".into()], ["Jujutsu Kaisen".into()]];
+	let mut state = State::from_rows(&rows, "jjk".into());
+
+	state.prefer(vec![1, 1]);
+
+	assert_eq!((state.matches.clone(), state.choice()), (vec![1], Some(1)));
 }
 
 #[test]

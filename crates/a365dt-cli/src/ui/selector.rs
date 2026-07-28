@@ -1,4 +1,7 @@
-use std::io::{self, IsTerminal};
+use std::{
+	collections::HashSet,
+	io::{self, IsTerminal},
+};
 
 use console::{
 	Key, Term, measure_text_width, strip_ansi_codes, style, truncate_str,
@@ -101,6 +104,7 @@ pub(crate) struct State {
 	search: Search,
 	input: String,
 	cursor: usize,
+	preferred: Vec<usize>,
 	matches: Vec<usize>,
 	selected: usize,
 	offset: usize,
@@ -113,6 +117,7 @@ impl State {
 			search,
 			input: String::new(),
 			cursor: 0,
+			preferred: Vec::new(),
 			matches,
 			selected: 0,
 			offset: 0,
@@ -134,8 +139,7 @@ impl State {
 		let selected = self.matches.get(self.selected).copied();
 		let screen_row = self.selected.saturating_sub(self.offset);
 		self.search = Search::new(rows);
-		let (query, _) = query_and_choice(&self.input, self.search.len());
-		self.matches = self.search.ranked(query);
+		self.matches = self.ranked();
 		if let Some(selected) = selected
 			&& let Some(position) =
 				self.matches.iter().position(|index| *index == selected)
@@ -149,11 +153,26 @@ impl State {
 	}
 
 	pub(crate) fn query(&self) -> &str {
-		query_and_choice(&self.input, self.search.len()).0
+		query_and_choice(&self.input).0
 	}
 
 	pub(crate) fn has_matches(&self) -> bool {
 		!self.matches.is_empty()
+	}
+
+	pub(crate) fn prefer(&mut self, rows: Vec<usize>) {
+		let selected = self.selected_row();
+		let screen_row = self.selected.saturating_sub(self.offset);
+		self.preferred = rows;
+		self.matches = self.ranked();
+		if let Some(position) = selected.and_then(|selected| {
+			self.matches.iter().position(|index| *index == selected)
+		}) {
+			self.selected = position;
+			self.offset = position.saturating_sub(screen_row);
+		} else {
+			self.select_first();
+		}
 	}
 
 	pub(crate) fn selected_row(&self) -> Option<usize> {
@@ -290,16 +309,8 @@ impl State {
 	}
 
 	fn choice(&self) -> Option<usize> {
-		let (_, numbered) = query_and_choice(&self.input, self.search.len());
+		let (_, numbered) = query_and_choice(&self.input);
 		if let Some(numbered) = numbered {
-			return numbered
-				.checked_sub(1)
-				.and_then(|index| self.matches.get(index))
-				.copied();
-		}
-		if let Ok(numbered) = self.input.trim().parse::<usize>()
-			&& (1..=self.search.len()).contains(&numbered)
-		{
 			return numbered
 				.checked_sub(1)
 				.and_then(|index| self.matches.get(index))
@@ -309,10 +320,21 @@ impl State {
 	}
 
 	fn refresh(&mut self) {
-		let (query, _) = query_and_choice(&self.input, self.search.len());
-		self.matches = self.search.ranked(query);
+		self.matches = self.ranked();
 		self.selected = 0;
 		self.offset = 0;
+	}
+
+	fn ranked(&self) -> Vec<usize> {
+		let query = query_and_choice(&self.input).0;
+		let mut seen = HashSet::new();
+		self.preferred
+			.iter()
+			.copied()
+			.filter(|index| *index < self.search.len())
+			.chain(self.search.ranked(query))
+			.filter(|index| seen.insert(*index))
+			.collect()
 	}
 
 	fn ensure_visible(&mut self, visible: usize) {
@@ -324,14 +346,8 @@ impl State {
 	}
 }
 
-fn query_and_choice(input: &str, choices: usize) -> (&str, Option<usize>) {
+fn query_and_choice(input: &str) -> (&str, Option<usize>) {
 	let input = input.trim_end();
-	if input
-		.parse::<usize>()
-		.is_ok_and(|number| (1..=choices).contains(&number))
-	{
-		return ("", None);
-	}
 	let start = input
 		.rfind(char::is_whitespace)
 		.map_or(0, |index| index + 1);
