@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Gridness/a365dt/compare/v0.6.0...v0.6.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **cli:** centralize Ctrl+C handling ([#18](https://github.com/Gridness/a365dt/issues/18)) ([c7f4141](https://github.com/Gridness/a365dt/commit/c7f4141c86bb64d04f611e30dc33b94b92ef6675))
+
 ## [0.6.0](https://github.com/Gridness/a365dt/compare/v0.5.0...v0.6.0) (2026-07-27)
 
 
