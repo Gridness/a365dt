@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Architecture review — a365dt</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "neutral",
+        securityLevel: "loose",
+        flowchart: { curve: "basis", htmlLabels: true },
+      });
+    </script>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      .seam-line {
+        border-top: 2px dashed #94a3b8;
+      }
+      .leak-line {
+        border-color: #dc2626;
+        color: #b91c1c;
+      }
+      .deep {
+        background: linear-gradient(135deg, #0f172a, #1e293b);
+        color: #f8fafc;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      .module-box {
+        border: 1px solid #cbd5e1;
+        background: white;
+        border-radius: 0.65rem;
+      }
+      .diagram-grid {
+        background-image:
+          linear-gradient(to right, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+        background-size: 22px 22px;
+      }
+      .mass-interface {
+        background: #fecaca;
+        border: 1px solid #f87171;
+      }
+      .mass-implementation {
+        background: #e2e8f0;
+        border: 1px solid #94a3b8;
+      }
+      .mass-deep {
+        background: #1e293b;
+        border: 1px solid #0f172a;
+      }
+      .mermaid {
+        display: flex;
+        min-height: 255px;
+        align-items: center;
+        justify-content: center;
+      }
+      @media print {
+        .break-inside-avoid {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-stone-50 font-sans text-slate-900 antialiased">
+    <main class="mx-auto max-w-6xl space-y-12 px-5 py-12 sm:px-8">
+      <header class="border-b border-slate-300 pb-8">
+        <div class="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">
+              Current code · 27 July 2026
+            </p>
+            <h1 class="mt-2 font-serif text-4xl font-semibold tracking-tight">
+              Architecture review — a365dt
+            </h1>
+          </div>
+          <div class="flex flex-wrap gap-2 text-xs text-slate-600">
+            <span class="rounded-full border border-slate-300 bg-white px-3 py-1">13 implementation files</span>
+            <span class="rounded-full border border-slate-300 bg-white px-3 py-1">3,732 implementation LoC</span>
+            <span class="rounded-full border border-slate-300 bg-white px-3 py-1">30 tests</span>
+            <span class="rounded-full border border-slate-300 bg-white px-3 py-1">clean worktree</span>
+          </div>
+        </div>
+        <div class="mt-7 grid gap-3 text-xs sm:grid-cols-4">
+          <div class="module-box flex items-center gap-2 p-3">
+            <span class="h-5 w-8 rounded border border-slate-400 bg-white"></span>
+            <span>solid box = module</span>
+          </div>
+          <div class="module-box flex items-center gap-2 p-3">
+            <span class="w-8 seam-line"></span>
+            <span>dashed line = seam</span>
+          </div>
+          <div class="module-box flex items-center gap-2 p-3">
+            <span class="w-8 border-t-2 border-red-600"></span>
+            <span>red arrow = leakage</span>
+          </div>
+          <div class="module-box flex items-center gap-2 p-3">
+            <span class="deep h-5 w-8 rounded"></span>
+            <span>dark box = deep module</span>
+          </div>
+        </div>
+      </header>
+
+      <section id="candidates" class="space-y-12">
+        <article id="series-catalogue" class="break-inside-avoid overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-6 py-6 sm:px-8">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Candidate 01</p>
+                <h2 class="mt-1 font-serif text-3xl font-semibold">Collapse the Series catalogue seam</h2>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Strong</span>
+                <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">local-substitutable</span>
+              </div>
+            </div>
+            <div class="mt-5 rounded-lg bg-slate-50 px-4 py-3 font-mono text-xs leading-5 text-slate-700">
+              series_cache.rs:14–75 · series_search.rs:31–69, 80–92, 180–243, 285–320, 385–397 · main.rs:100–108
+            </div>
+          </div>
+
+          <div class="grid gap-0 lg:grid-cols-2">
+            <section class="diagram-grid border-b border-slate-200 p-6 lg:border-b-0 lg:border-r" aria-labelledby="catalogue-before">
+              <h3 id="catalogue-before" class="text-xs font-bold uppercase tracking-[0.18em] text-red-700">Before · shallow storage seam</h3>
+              <div class="mt-5 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                <div class="space-y-3">
+                  <div class="module-box border-red-300 p-3">
+                    <p class="text-xs font-bold uppercase tracking-wider">Series discovery</p>
+                    <p class="mt-1 text-xs text-slate-600">refresh · merge · de-duplicate · remove</p>
+                  </div>
+                  <div class="module-box border-red-300 p-3">
+                    <p class="text-xs font-bold uppercase tracking-wider">Selector loop</p>
+                    <p class="mt-1 text-xs text-slate-600">mutates catalogue state</p>
+                  </div>
+                  <div class="module-box border-red-300 p-3">
+                    <p class="text-xs font-bold uppercase tracking-wider">Cache command</p>
+                    <p class="mt-1 text-xs text-slate-600">prunes storage directly</p>
+                  </div>
+                </div>
+                <div class="text-center text-red-700" aria-hidden="true">
+                  <div class="text-xl">⇄</div>
+                  <div class="mt-3 text-xl">⇄</div>
+                  <div class="mt-3 text-xl">→</div>
+                </div>
+                <div class="mass-interface rounded-xl p-4">
+                  <p class="text-xs font-bold uppercase tracking-wider text-red-900">Cache interface</p>
+                  <ul class="mt-3 space-y-2 text-xs text-red-950">
+                    <li>public fields</li>
+                    <li>freshness mutation</li>
+                    <li>load / store / prune</li>
+                    <li>path + JSON only</li>
+                  </ul>
+                </div>
+              </div>
+              <p class="mt-5 text-xs font-semibold text-red-700">Catalogue rules cross the seam 20+ times.</p>
+            </section>
+
+            <section class="diagram-grid border-b border-slate-200 p-6 lg:border-b-0" aria-labelledby="catalogue-after">
+              <h3 id="catalogue-after" class="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">After · one deep domain module</h3>
+              <div class="mt-5 flex min-h-[218px] items-center gap-4">
+                <div class="space-y-3 text-center text-xs font-semibold text-slate-600">
+                  <div class="module-box px-3 py-2">Series discovery</div>
+                  <div class="module-box px-3 py-2">line selection</div>
+                  <div class="module-box px-3 py-2">cache command</div>
+                </div>
+                <div class="text-2xl text-emerald-700" aria-hidden="true">→</div>
+                <div class="deep flex-1 rounded-xl p-5">
+                  <p class="text-xs font-bold uppercase tracking-[0.16em] text-emerald-300">Series catalogue module</p>
+                  <div class="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                    <span class="rounded bg-white/5 p-2">stored representation</span>
+                    <span class="rounded bg-white/5 p-2">freshness</span>
+                    <span class="rounded bg-white/5 p-2">page refresh</span>
+                    <span class="rounded bg-white/5 p-2">merge + removal</span>
+                    <span class="rounded bg-white/5 p-2">de-duplication</span>
+                    <span class="rounded bg-white/5 p-2">persistence + prune</span>
+                  </div>
+                </div>
+              </div>
+              <p class="mt-5 text-xs font-semibold text-emerald-700">The stored representation becomes implementation.</p>
+            </section>
+          </div>
+
+          <div class="grid gap-6 border-t border-slate-200 px-6 py-6 sm:px-8 lg:grid-cols-[1.25fr_1fr]">
+            <div class="space-y-4 text-sm leading-6">
+              <p><span class="font-bold">Problem —</span> <code>series_cache</code> is shallow: Series catalogue freshness, refresh, merge, removal, and persistence are coordinated outside its interface.</p>
+              <p><span class="font-bold">Solution —</span> Deepen one Series catalogue module around the stored representation and every catalogue invariant; Series discovery keeps only interaction and choosing a Series.</p>
+              <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"><span class="font-bold">Deletion test:</span> removing <code>series_cache</code> concentrates its 86 lines where the real catalogue implementation already lives.</p>
+            </div>
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Wins</h3>
+              <ul class="mt-3 space-y-2 text-sm">
+                <li>• locality: catalogue rules co-locate</li>
+                <li>• leverage: three callers, one interface</li>
+                <li>• delete one shallow module</li>
+                <li>• tests cover refresh scenarios</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="resolution-plan" class="break-inside-avoid overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-6 py-6 sm:px-8">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Candidate 02</p>
+                <h2 class="mt-1 font-serif text-3xl font-semibold">Deepen the Resolution plan</h2>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Strong</span>
+                <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">in-process</span>
+              </div>
+            </div>
+            <div class="mt-5 rounded-lg bg-slate-50 px-4 py-3 font-mono text-xs leading-5 text-slate-700">
+              main.rs:121–130, 192–237 · select.rs:29–43, 218–300 · download.rs:242–261 · api.rs:56–68, 168–170
+            </div>
+          </div>
+
+          <div class="grid gap-0 lg:grid-cols-2">
+            <section class="border-b border-slate-200 p-5 lg:border-b-0 lg:border-r" aria-labelledby="resolution-before">
+              <h3 id="resolution-before" class="px-1 text-xs font-bold uppercase tracking-[0.18em] text-red-700">Before · invariant split four ways</h3>
+              <pre class="mermaid" role="img" aria-label="Before: Resolution plan flow crosses main, select, and download modules">
+flowchart LR
+  A["Anime365<br/>Embed"] --> B["main<br/>fetch + sort"]
+  B --> C["Release<br/>relay"]
+  C --> D["select<br/>coverage + choices"]
+  D --> E["PlannedRelease<br/>relay"]
+  E --> F["download"]
+  F -. "retry reinterprets<br/>height + URLs" .-> A
+  classDef leak fill:#fff1f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+  class B,C,D,E,F leak;
+  linkStyle 5 stroke:#dc2626,stroke-width:2px;
+              </pre>
+            </section>
+            <section class="border-b border-slate-200 p-5 lg:border-b-0" aria-labelledby="resolution-after">
+              <h3 id="resolution-after" class="px-1 text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">After · chosen height stays local</h3>
+              <pre class="mermaid" role="img" aria-label="After: a deep Resolution plan module owns loading, choices, and refreshed media resolution">
+flowchart LR
+  A["Translation<br/>track"] --> P["Resolution plan module<br/><br/>availability loading<br/>Episode order<br/>preferred height<br/>explicit exceptions<br/>URL refresh"]
+  P --> D["Download<br/>batch"]
+  X["Anime365<br/>adapter"] --> P
+  classDef deep fill:#172033,stroke:#0f172a,stroke-width:3px,color:#f8fafc;
+  class P deep;
+              </pre>
+            </section>
+          </div>
+
+          <div class="grid gap-6 border-t border-slate-200 px-6 py-6 sm:px-8 lg:grid-cols-[1.25fr_1fr]">
+            <div class="space-y-4 text-sm leading-6">
+              <p><span class="font-bold">Problem —</span> The Resolution plan implementation is split across media loading, selection, relay records, and retry; raw Anime365 availability crosses shallow seams.</p>
+              <p><span class="font-bold">Solution —</span> Deepen one Resolution plan module around loading, Episode order, preferred resolution, explicit exceptions, URL validation, and re-resolution during retry.</p>
+              <p class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900"><span class="font-bold">ADR-0001:</span> preserves the required freshly resolved media URL; the decision is not reopened.</p>
+              <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"><span class="font-bold">Deletion test:</span> removing <code>Release</code> and <code>fetch_embeds</code> concentrates implementation instead of losing abstraction.</p>
+            </div>
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Wins</h3>
+              <ul class="mt-3 space-y-2 text-sm">
+                <li>• locality: one chosen-height invariant</li>
+                <li>• leverage: initial load + retry</li>
+                <li>• delete two relay records</li>
+                <li>• tests hit one interface</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="live-selector" class="break-inside-avoid overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-6 py-6 sm:px-8">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Candidate 03</p>
+                <h2 class="mt-1 font-serif text-3xl font-semibold">Deepen live terminal selection</h2>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Strong</span>
+                <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">ports &amp; adapters</span>
+              </div>
+            </div>
+            <div class="mt-5 rounded-lg bg-slate-50 px-4 py-3 font-mono text-xs leading-5 text-slate-700">
+              series_search.rs:74–252 · ui/selector.rs:47–97, 100–223, 368–516 · select.rs:53–70
+            </div>
+          </div>
+
+          <div class="grid gap-0 lg:grid-cols-2">
+            <section class="diagram-grid border-b border-slate-200 p-6 lg:border-b-0 lg:border-r" aria-labelledby="selector-before">
+              <h3 id="selector-before" class="text-xs font-bold uppercase tracking-[0.18em] text-red-700">Before · interface ≈ implementation</h3>
+              <div class="mt-5 flex min-h-[250px] items-end justify-center gap-8">
+                <div class="flex w-36 flex-col items-stretch gap-2 text-center text-xs font-semibold">
+                  <div class="mass-interface h-40 rounded-lg p-3 text-red-950">
+                    <p class="font-bold uppercase tracking-wider">Interface</p>
+                    <p class="mt-3 leading-5">State · Layout · Action · draw · clear · visible rows · errors · write choice</p>
+                  </div>
+                  <div class="mass-implementation h-24 rounded-lg p-3 text-slate-700">
+                    <p class="font-bold uppercase tracking-wider">Implementation</p>
+                    <p class="mt-2">key handling + render</p>
+                  </div>
+                </div>
+                <div class="w-44 rounded-xl border-2 border-red-400 bg-red-50 p-4 text-xs text-red-950">
+                  <p class="font-bold uppercase tracking-wider">Series discovery</p>
+                  <p class="mt-3 leading-5">runs terminal input, layout, redraw, cleanup, debounce, and catalogue updates together</p>
+                </div>
+              </div>
+            </section>
+            <section class="diagram-grid border-b border-slate-200 p-6 lg:border-b-0" aria-labelledby="selector-after">
+              <h3 id="selector-after" class="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">After · two modes, one deep adapter</h3>
+              <div class="mt-5 flex min-h-[250px] items-center justify-center gap-5">
+                <div class="space-y-3 text-center text-xs font-semibold">
+                  <div class="module-box px-4 py-3">static choices</div>
+                  <div class="module-box px-4 py-3">Series suggestions</div>
+                </div>
+                <div class="text-2xl text-emerald-700" aria-hidden="true">→</div>
+                <div class="flex w-52 flex-col gap-2 text-center text-xs">
+                  <div class="rounded-md bg-emerald-200 px-3 py-2 font-bold text-emerald-950">small interface</div>
+                  <div class="mass-deep h-44 rounded-xl p-4 text-slate-100">
+                    <p class="font-bold uppercase tracking-wider text-emerald-300">Terminal selection adapter</p>
+                    <p class="mt-4 leading-5 text-slate-300">input · state · live replacement · rendering · cleanup · selection preservation</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="grid gap-6 border-t border-slate-200 px-6 py-6 sm:px-8 lg:grid-cols-[1.25fr_1fr]">
+            <div class="space-y-4 text-sm leading-6">
+              <p><span class="font-bold">Problem —</span> Series discovery imports most of the terminal selector implementation and owns a second interactive loop, so terminal bugs have little locality.</p>
+              <p><span class="font-bold">Solution —</span> Deepen the existing terminal selection adapter around both static rows and changing Series suggestions; keep catalogue updates in Series discovery.</p>
+              <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"><span class="font-bold">Deletion test:</span> a deep adapter is real because removing it forces both interaction modes to absorb input, rendering, and cleanup.</p>
+            </div>
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Wins</h3>
+              <ul class="mt-3 space-y-2 text-sm">
+                <li>• interface shrinks sharply</li>
+                <li>• locality: terminal behavior co-locates</li>
+                <li>• leverage: two interaction modes</li>
+                <li>• tests cover live selection</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="verified-download" class="break-inside-avoid overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-6 py-6 sm:px-8">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Candidate 04</p>
+                <h2 class="mt-1 font-serif text-3xl font-semibold">Concentrate the Verified download implementation</h2>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Strong</span>
+                <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">local-substitutable</span>
+              </div>
+            </div>
+            <div class="mt-5 rounded-lg bg-slate-50 px-4 py-3 font-mono text-xs leading-5 text-slate-700">
+              download.rs:134–216, 218–358, 381–727, 778–851 · download_tests.rs:58–137
+            </div>
+          </div>
+
+          <div class="grid gap-0 lg:grid-cols-2">
+            <section class="diagram-grid border-b border-slate-200 p-6 lg:border-b-0 lg:border-r" aria-labelledby="verified-before">
+              <h3 id="verified-before" class="text-xs font-bold uppercase tracking-[0.18em] text-red-700">Before · one 856-line cross-section</h3>
+              <div class="mt-5 space-y-2 text-center text-xs font-semibold">
+                <div class="h-11 rounded-md border-l-4 border-slate-500 bg-slate-100 py-3">Download batch scheduler + cancellation</div>
+                <div class="h-14 rounded-md border-l-4 border-red-500 bg-red-50 py-4 text-red-900">Episode workflow + two retry loops</div>
+                <div class="h-16 rounded-md border-l-4 border-red-600 bg-red-100 py-5 text-red-950">HEAD / GET / range implementation</div>
+                <div class="h-20 rounded-md border-l-4 border-red-700 bg-red-200 py-6 text-red-950">.part · validator · flush · rename · .corrupt</div>
+                <div class="h-11 rounded-md border-l-4 border-slate-500 bg-slate-100 py-3">terminal progress</div>
+              </div>
+              <p class="mt-5 text-xs font-semibold text-red-700">Tests reach nine implementation helpers.</p>
+            </section>
+            <section class="diagram-grid border-b border-slate-200 p-6 lg:border-b-0" aria-labelledby="verified-after">
+              <h3 id="verified-after" class="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">After · ADR-0001 behind one seam</h3>
+              <div class="mt-5 flex min-h-[260px] items-center gap-4">
+                <div class="space-y-3 text-center text-xs font-semibold">
+                  <div class="module-box px-3 py-3">Download batch</div>
+                  <div class="module-box px-3 py-3">Episode workflow</div>
+                  <div class="module-box px-3 py-3">progress</div>
+                </div>
+                <div class="text-2xl text-emerald-700" aria-hidden="true">→</div>
+                <div class="deep flex-1 rounded-xl p-5">
+                  <p class="text-xs font-bold uppercase tracking-[0.16em] text-emerald-300">Verified download module</p>
+                  <p class="mt-4 text-xs leading-5 text-slate-300">
+                    validators · resume range · retry classification · byte verification · durable flush · atomic finalization · corrupt replacement
+                  </p>
+                  <div class="mt-4 rounded border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200">
+                    scenario tests at the module interface
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="grid gap-6 border-t border-slate-200 px-6 py-6 sm:px-8 lg:grid-cols-[1.25fr_1fr]">
+            <div class="space-y-4 text-sm leading-6">
+              <p><span class="font-bold">Problem —</span> Download batch scheduling, progress, retry resolution, range rules, and filesystem transaction rules share one oversized module; helper tests miss their composition.</p>
+              <p><span class="font-bold">Solution —</span> Put the complete Verified download implementation in a private deep module while the Download batch module retains scheduling and outcomes.</p>
+              <p class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900"><span class="font-bold">ADR-0001:</span> this concentrates the recorded decision; it does not change it.</p>
+              <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"><span class="font-bold">Deletion test:</span> removing this module would put the full transfer transaction back into the Episode workflow.</p>
+            </div>
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Wins</h3>
+              <ul class="mt-3 space-y-2 text-sm">
+                <li>• locality: ADR-0001 in one module</li>
+                <li>• interface becomes the test surface</li>
+                <li>• download.rs drops below 500 LoC</li>
+                <li>• no mock trait seam</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article id="muxed-download" class="break-inside-avoid overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-6 py-6 sm:px-8">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Candidate 05</p>
+                <h2 class="mt-1 font-serif text-3xl font-semibold">Deepen the existing Muxed download module</h2>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">Worth exploring</span>
+                <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">ports &amp; adapters</span>
+              </div>
+            </div>
+            <div class="mt-5 rounded-lg bg-slate-50 px-4 py-3 font-mono text-xs leading-5 text-slate-700">
+              main.rs:141–153 · download.rs:229–239, 329–346 · download/mux.rs:7–80
+            </div>
+          </div>
+
+          <div class="grid gap-0 lg:grid-cols-2">
+            <section class="border-b border-slate-200 p-5 lg:border-b-0 lg:border-r" aria-labelledby="mux-before">
+              <h3 id="mux-before" class="px-1 text-xs font-bold uppercase tracking-[0.18em] text-red-700">Before · lifecycle crosses the seam</h3>
+              <pre class="mermaid" role="img" aria-label="Before: Muxed download lifecycle is split between main, download job, and mux modules">
+flowchart TD
+  A["main<br/>ffmpeg check + batch choice"] --> B["Job<br/>mux: bool"]
+  B --> C["download_job<br/>existing MKV cleanup"]
+  C --> D["mux module<br/>ffmpeg + partial verification"]
+  D --> E["download_job<br/>outcome classification"]
+  classDef leak fill:#fff1f2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+  class B,C,D,E leak;
+              </pre>
+            </section>
+            <section class="border-b border-slate-200 p-5 lg:border-b-0" aria-labelledby="mux-after">
+              <h3 id="mux-after" class="px-1 text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">After · one file lifecycle</h3>
+              <pre class="mermaid" role="img" aria-label="After: the deep Muxed download module owns reconciliation, muxing, verification, and cleanup">
+flowchart TD
+  A["explicit Download batch choice"] --> D["Muxed download module<br/><br/>existing-file reconciliation<br/>ffmpeg execution<br/>incomplete MKV cleanup<br/>verification + rename<br/>source lifecycle"]
+  D --> E["Download batch outcome"]
+  classDef deep fill:#172033,stroke:#0f172a,stroke-width:3px,color:#f8fafc;
+  class D deep;
+              </pre>
+            </section>
+          </div>
+
+          <div class="grid gap-6 border-t border-slate-200 px-6 py-6 sm:px-8 lg:grid-cols-[1.25fr_1fr]">
+            <div class="space-y-4 text-sm leading-6">
+              <p><span class="font-bold">Problem —</span> The existing module is deep, but Muxed download reconciliation and outcome meaning remain outside it; some verification failures can leave an incomplete MKV until the next run.</p>
+              <p><span class="font-bold">Solution —</span> Deepen the module already present around reconciliation, incomplete-output cleanup, verification, atomic rename, and source lifecycle; keep the explicit batch choice outside.</p>
+              <p class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950"><span class="font-bold">ADR-0002:</span> closes an implementation gap; it does not reopen the lossless-muxing decision.</p>
+              <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"><span class="font-bold">Deletion test:</span> the existing module passes—removing it puts command, verification, rename, and destructive cleanup into <code>download_job</code>.</p>
+            </div>
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Wins</h3>
+              <ul class="mt-3 space-y-2 text-sm">
+                <li>• locality: one MKV lifecycle</li>
+                <li>• leverage: every mux failure</li>
+                <li>• tests cover destructive cleanup</li>
+                <li>• no new adapter</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section aria-labelledby="skipped-heading" class="rounded-2xl border border-slate-300 bg-slate-100 px-6 py-6 sm:px-8">
+        <h2 id="skipped-heading" class="text-xs font-bold uppercase tracking-[0.18em] text-slate-600">Deliberately skipped</h2>
+        <div class="mt-4 grid gap-3 text-sm md:grid-cols-3">
+          <div class="rounded-lg bg-white p-4">
+            <p class="font-bold">Anime365 trait seam</p>
+            <p class="mt-1 text-xs leading-5 text-slate-600">One adapter. The seam is hypothetical.</p>
+          </div>
+          <div class="rounded-lg bg-white p-4">
+            <p class="font-bold">Generic concurrency module</p>
+            <p class="mt-1 text-xs leading-5 text-slate-600">Three loops, three failure models. It would be shallow.</p>
+          </div>
+          <div class="rounded-lg bg-white p-4">
+            <p class="font-bold">Another workspace crate</p>
+            <p class="mt-1 text-xs leading-5 text-slate-600">One binary. A crate seam would reduce locality.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="top-recommendation" class="deep rounded-2xl px-7 py-8 sm:px-10">
+        <p class="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">Top recommendation</p>
+        <a href="#series-catalogue" class="mt-2 block font-serif text-3xl font-semibold text-white underline decoration-emerald-400 decoration-2 underline-offset-4">
+          Collapse the Series catalogue seam
+        </a>
+        <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
+          It is the cleanest deletion-test win: remove a shallow 86-line module, make catalogue invariants local, and separate catalogue state from the terminal loop before deeper selection work.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

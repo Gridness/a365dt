@@ -330,7 +330,7 @@ fn spawn_page(
 
 fn read_key(term: &Term) -> JoinHandle<io::Result<Key>> {
 	let term = term.clone();
-	tokio::task::spawn_blocking(move || term.read_key())
+	tokio::task::spawn_blocking(move || term.read_key_raw())
 }
 
 fn resolve_key(key: Result<io::Result<Key>, JoinError>) -> Result<Key, Error> {

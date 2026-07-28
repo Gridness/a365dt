@@ -13,15 +13,23 @@ mod ui;
 #[path = "search_tests.rs"]
 mod search_tests;
 
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;
+
 use std::{
-	collections::VecDeque, num::NonZeroUsize, path::PathBuf, process::ExitCode,
+	collections::VecDeque,
+	num::NonZeroUsize,
+	path::PathBuf,
+	process::{self, ExitCode},
+	sync::{Arc, Mutex},
 };
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{Shell, generate};
 use console::style;
 use indicatif::{HumanBytes, HumanDuration};
-use tokio::{fs, process::Command, task::JoinSet};
+use tokio::{fs, process::Command, signal, sync::watch, task::JoinSet};
 
 use crate::{
 	api::{Anime365, Episode, Translation},
@@ -75,6 +83,27 @@ enum CacheCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
 	let args = Args::parse();
+	ui::init();
+	let debug = args.debug;
+	let active_download = Arc::new(Mutex::new(None));
+	let interrupt_download = Arc::clone(&active_download);
+	drop(tokio::spawn(async move {
+		match signal::ctrl_c().await {
+			Ok(()) => {
+				ui::failure("Cancelled.");
+				if !cancel_download(&interrupt_download) {
+					process::exit(130);
+				}
+			}
+			Err(error) => {
+				ui::failure(
+					Error::with_debug("Could not listen for Ctrl+C.", error)
+						.render(debug),
+				);
+				process::exit(1);
+			}
+		}
+	}));
 	if let Some(Commands::Completions { shell }) = args.command.as_ref() {
 		generate(
 			*shell,
@@ -84,9 +113,7 @@ async fn main() -> ExitCode {
 		);
 		return ExitCode::SUCCESS;
 	}
-	ui::init();
-	let debug = args.debug;
-	match run(args).await {
+	match run(args, active_download).await {
 		Ok(code) => code,
 		Err(error) => {
 			ui::failure(error.render(debug));
@@ -95,7 +122,20 @@ async fn main() -> ExitCode {
 	}
 }
 
-async fn run(args: Args) -> Result<ExitCode, Error> {
+fn cancel_download(
+	active_download: &Mutex<Option<watch::Sender<bool>>>,
+) -> bool {
+	active_download
+		.lock()
+		.unwrap()
+		.as_ref()
+		.is_some_and(|cancel| cancel.send(true).is_ok())
+}
+
+async fn run(
+	args: Args,
+	active_download: Arc<Mutex<Option<watch::Sender<bool>>>>,
+) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
 	if let Some(Commands::Cache {
 		command: CacheCommand::Prune,
@@ -167,7 +207,12 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
 		.into_iter()
 		.map(|release| Job::new(release, directory.clone(), mux))
 		.collect();
-	let summary = download::run(api, jobs, args.jobs.get(), args.debug).await;
+	let (cancel, cancellation) = watch::channel(false);
+	*active_download.lock().unwrap() = Some(cancel);
+	let summary =
+		download::run(api, jobs, args.jobs.get(), args.debug, cancellation)
+			.await;
+	*active_download.lock().unwrap() = None;
 	print_summary(&summary, &directory, args.debug);
 	ui::alert();
 	let interrupted = summary

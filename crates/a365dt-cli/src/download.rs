@@ -14,7 +14,6 @@ use reqwest::{Method, Response, StatusCode, header};
 use tokio::{
 	fs::{self, OpenOptions},
 	io::AsyncWriteExt,
-	signal,
 	sync::watch,
 	task::JoinSet,
 	time::sleep,
@@ -136,17 +135,15 @@ pub async fn run(
 	jobs: Vec<Job>,
 	concurrency: usize,
 	debug: bool,
+	mut cancel: watch::Receiver<bool>,
 ) -> Summary {
 	let started = Instant::now();
 	let bars = Arc::new(Bars::new(jobs.len() as u64, debug));
-	let (cancel, _) = watch::channel(false);
 	let mut pending = VecDeque::from(jobs);
 	let mut active = JoinSet::new();
 	for _ in 0..concurrency {
 		spawn_next(&mut active, &mut pending, &api, &bars, &cancel);
 	}
-	let interrupt = signal::ctrl_c();
-	tokio::pin!(interrupt);
 	let mut interrupted = false;
 	let mut outcomes = Vec::new();
 	while !active.is_empty() {
@@ -172,13 +169,12 @@ pub async fn run(
 					spawn_next(&mut active, &mut pending, &api, &bars, &cancel);
 				}
 			}
-			result = &mut interrupt, if !interrupted => {
+			result = cancel.changed(), if !interrupted => {
 				interrupted = true;
-				let _ = cancel.send(true);
 				match result {
 					Ok(()) => bars.message("Stopping cleanly; flushing partial files…"),
 					Err(error) => bars.message(&Error::with_debug(
-						"Could not listen for Ctrl+C; stopping active downloads.",
+						"The cancellation channel closed; stopping active downloads.",
 						error,
 					).render(bars.debug)),
 				}
@@ -205,12 +201,12 @@ fn spawn_next(
 	pending: &mut VecDeque<Job>,
 	api: &Anime365,
 	bars: &Arc<Bars>,
-	cancel: &watch::Sender<bool>,
+	cancel: &watch::Receiver<bool>,
 ) {
 	if let Some(job) = pending.pop_front() {
 		let api = api.clone();
 		let bars = Arc::clone(bars);
-		let cancel = cancel.subscribe();
+		let cancel = cancel.clone();
 		active.spawn(async move { download_job(api, job, bars, cancel).await });
 	}
 }
@@ -482,7 +478,7 @@ async fn transfer(
 	loop {
 		tokio::select! {
 			changed = cancel.changed() => {
-				if changed.is_ok() && *cancel.borrow() {
+				if changed.is_err() || *cancel.borrow() {
 					file.sync_all().await.map_err(io_error)?;
 					return Err(fatal("interrupted"));
 				}

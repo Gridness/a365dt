@@ -4,8 +4,8 @@ use std::{
 };
 
 use console::{
-	Alignment, Style, Term, measure_text_width, pad_str, set_colors_enabled,
-	set_colors_enabled_stderr, style, truncate_str,
+	Alignment, Key, Style, Term, measure_text_width, pad_str,
+	set_colors_enabled, set_colors_enabled_stderr, style, truncate_str,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -79,12 +79,29 @@ pub fn secret(label: &str) -> Result<String, Error> {
 	io::stdout().flush().map_err(|error| {
 		Error::with_debug("Could not display the secure input prompt.", error)
 	})?;
-	Term::stdout()
-		.read_secure_line()
-		.map(|input| input.trim().to_owned())
-		.map_err(|error| {
+	let term = Term::stdout();
+	let mut input = String::new();
+	loop {
+		match term.read_key_raw().map_err(|error| {
 			Error::with_debug("Could not read secure terminal input.", error)
-		})
+		})? {
+			Key::Enter => {
+				println!();
+				return Ok(input.trim().to_owned());
+			}
+			Key::Backspace => {
+				input.pop();
+			}
+			Key::Char(character) if !character.is_control() => {
+				input.push(character);
+			}
+			Key::CtrlC => {
+				println!();
+				return Err("Cancelled.".into());
+			}
+			_ => {}
+		}
+	}
 }
 
 pub fn confirm(label: &str, default: bool) -> Result<bool, Error> {
