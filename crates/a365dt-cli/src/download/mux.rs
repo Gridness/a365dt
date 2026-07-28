@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tokio::{fs, fs::File, process::Command};
 
-use crate::error::Error;
+use crate::{error::Error, l10n::tr};
 
 pub async fn run(
 	video: &Path,
@@ -33,11 +33,11 @@ pub async fn run(
 		.arg(&part)
 		.output()
 		.await
-		.map_err(|error| Error::with_debug("Could not start ffmpeg.", error))?;
+		.map_err(|error| Error::with_debug(tr("mux-start-error"), error))?;
 	if !result.status.success() {
 		let _ = fs::remove_file(&part).await;
 		return Err(Error::with_debug(
-			"ffmpeg could not combine the video and subtitles.",
+			tr("mux-combine-error"),
 			format!(
 				"{}: {}",
 				result.status,
@@ -45,36 +45,28 @@ pub async fn run(
 			),
 		));
 	}
-	let file = File::open(&part).await.map_err(|error| {
-		Error::with_debug("Could not verify the muxed MKV file.", error)
-	})?;
+	let file = File::open(&part)
+		.await
+		.map_err(|error| Error::with_debug(tr("mux-verify-error"), error))?;
 	if file
 		.metadata()
 		.await
-		.map_err(|error| {
-			Error::with_debug("Could not verify the muxed MKV file.", error)
-		})?
+		.map_err(|error| Error::with_debug(tr("mux-verify-error"), error))?
 		.len() == 0
 	{
-		return Err(Error::new("ffmpeg created an empty MKV file."));
+		return Err(Error::new(tr("mux-empty-error")));
 	}
-	file.sync_all().await.map_err(|error| {
-		Error::with_debug("Could not finish writing the muxed MKV file.", error)
-	})?;
-	fs::rename(&part, output).await.map_err(|error| {
-		Error::with_debug("Could not save the muxed MKV file.", error)
-	})?;
+	file.sync_all()
+		.await
+		.map_err(|error| Error::with_debug(tr("mux-write-error"), error))?;
+	fs::rename(&part, output)
+		.await
+		.map_err(|error| Error::with_debug(tr("mux-save-error"), error))?;
 	fs::remove_file(video).await.map_err(|error| {
-		Error::with_debug(
-			"The MKV was saved, but the source video could not be removed.",
-			error,
-		)
+		Error::with_debug(tr("mux-remove-video-error"), error)
 	})?;
 	fs::remove_file(subtitle).await.map_err(|error| {
-		Error::with_debug(
-			"The MKV was saved, but the source subtitles could not be removed.",
-			error,
-		)
+		Error::with_debug(tr("mux-remove-subtitle-error"), error)
 	})?;
 	Ok(())
 }

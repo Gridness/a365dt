@@ -2,7 +2,10 @@ use std::process::ExitCode;
 
 use console::style;
 
-use crate::ui;
+use crate::{
+	l10n::{tr, tr_args},
+	ui,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Status {
@@ -20,7 +23,7 @@ pub(super) struct Check {
 }
 
 pub(super) struct Section {
-	pub title: &'static str,
+	pub title: String,
 	pub debug: bool,
 	pub checks: Vec<Check>,
 }
@@ -40,17 +43,23 @@ impl Report {
 	}
 
 	pub fn print(&self) {
-		ui::heading("a365dt doctor");
+		ui::heading(tr("doctor-heading"));
 		let status = self.status();
 		println!(
 			"{}",
-			status.paint(format!("{} {}", status.symbol(), status))
+			status.paint(tr_args(
+				"doctor-status-line",
+				&[
+					("symbol", status.symbol().into()),
+					("status", status.to_string().into()),
+				],
+			))
 		);
 		for section in &self.sections {
 			if section.debug {
-				println!("\n{}", style(section.title).bold().magenta());
+				println!("\n{}", style(&section.title).bold().magenta());
 			} else {
-				ui::heading(section.title);
+				ui::heading(&section.title);
 			}
 			let rows =
 				section.checks.iter().map(Check::row).collect::<Vec<_>>();
@@ -98,11 +107,11 @@ impl Status {
 
 impl std::fmt::Display for Status {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		formatter.write_str(match self {
-			Self::Healthy | Self::Info => "Healthy",
-			Self::Warning => "Attention needed",
-			Self::Error => "Unhealthy",
-		})
+		formatter.write_str(&tr(match self {
+			Self::Healthy | Self::Info => "doctor-status-healthy",
+			Self::Warning => "doctor-status-warning",
+			Self::Error => "doctor-status-error",
+		}))
 	}
 }
 
@@ -128,7 +137,15 @@ impl Check {
 	fn row(&self) -> [String; 2] {
 		let value = self.remedy.as_ref().map_or_else(
 			|| self.value.clone(),
-			|remedy| format!("{} — {remedy}", self.value),
+			|remedy| {
+				tr_args(
+					"doctor-value-remedy",
+					&[
+						("value", self.value.clone().into()),
+						("remedy", remedy.clone().into()),
+					],
+				)
+			},
 		);
 		[
 			self.status.paint(format!(

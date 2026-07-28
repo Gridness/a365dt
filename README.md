@@ -55,6 +55,19 @@ Start the interactive search:
 a365dt
 ```
 
+The interface follows the system language and currently supports English and
+Russian. Override it for one run with `--lang`; the option can appear directly
+after `a365dt` or at the end of the command:
+
+```console
+a365dt --lang ru "Frieren"
+a365dt doctor --lang en-US
+```
+
+English accepts `en`, `eng`, `english`, and English BCP 47 tags. Russian
+accepts `ru`, `rus`, `russian`, and Russian BCP 47 tags. An unsupported valid
+language tag offers an English fallback in an interactive terminal.
+
 Interactive sessions show one bundled Tip and check GitHub for a newer stable
 release at most once per day. Update checks time out after two seconds and
 fail silently; when an update is available, a365dt shows instructions for the

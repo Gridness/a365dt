@@ -1,9 +1,13 @@
 use std::fmt;
 
+use crate::l10n::{tr, tr_args};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Error {
 	message: String,
 	detail: Option<String>,
+	cancelled: bool,
+	interrupted: bool,
 }
 
 impl Error {
@@ -11,6 +15,8 @@ impl Error {
 		Self {
 			message: message.into(),
 			detail: None,
+			cancelled: false,
+			interrupted: false,
 		}
 	}
 
@@ -21,15 +27,45 @@ impl Error {
 		Self {
 			message: message.into(),
 			detail: Some(detail.to_string()),
+			cancelled: false,
+			interrupted: false,
 		}
 	}
 
-	pub fn message(&self) -> &str {
-		&self.message
+	pub fn cancelled() -> Self {
+		Self {
+			message: tr("cancelled"),
+			detail: None,
+			cancelled: true,
+			interrupted: false,
+		}
+	}
+
+	pub fn interrupted() -> Self {
+		Self {
+			message: tr("interrupted"),
+			detail: None,
+			cancelled: false,
+			interrupted: true,
+		}
+	}
+
+	pub fn is_cancelled(&self) -> bool {
+		self.cancelled
+	}
+
+	pub fn is_interrupted(&self) -> bool {
+		self.interrupted
 	}
 
 	pub fn context(mut self, context: &str) -> Self {
-		self.message = format!("{context}: {}", self.message);
+		self.message = tr_args(
+			"error-context",
+			&[
+				("context", context.into()),
+				("message", self.message.into()),
+			],
+		);
 		self
 	}
 

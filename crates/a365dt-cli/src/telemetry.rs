@@ -13,6 +13,7 @@ use crate::{
 	app_files,
 	download::{self, Status},
 	error::Error,
+	l10n::{tr, tr_args},
 	ui,
 };
 
@@ -268,9 +269,8 @@ impl Drop for Measurement<'_> {
 
 impl Paths {
 	fn discover() -> Result<Self, Error> {
-		let directories = app_files::directories().ok_or_else(|| {
-			Error::new("Could not resolve the local telemetry directory.")
-		})?;
+		let directories = app_files::directories()
+			.ok_or_else(|| Error::new(tr("telemetry-directory-error")))?;
 		let data_directory = directories.data_local_dir();
 		Ok(Self {
 			data: data_directory.join("telemetry.json"),
@@ -396,7 +396,7 @@ pub fn show() -> Result<(), Error> {
 pub fn clear() -> Result<(), Error> {
 	let paths = Paths::discover()?;
 	clear_at(&paths)?;
-	ui::success("Local telemetry cleared");
+	ui::success(tr("telemetry-cleared"));
 	Ok(())
 }
 
@@ -415,7 +415,7 @@ fn clear_at(paths: &Paths) -> Result<(), Error> {
 pub fn disable() -> Result<(), Error> {
 	let paths = Paths::discover()?;
 	disable_at(&paths)?;
-	ui::success("Local telemetry disabled");
+	ui::success(tr("telemetry-disabled"));
 	Ok(())
 }
 
@@ -440,7 +440,7 @@ fn disable_at(paths: &Paths) -> Result<(), Error> {
 pub fn enable() -> Result<(), Error> {
 	let paths = Paths::discover()?;
 	enable_at(&paths)?;
-	ui::success("Local telemetry enabled");
+	ui::success(tr("telemetry-enabled"));
 	Ok(())
 }
 
@@ -476,12 +476,10 @@ fn update_stats(
 
 fn lock(paths: &Paths) -> Result<File, Error> {
 	let Some(directory) = paths.lock.parent() else {
-		return Err(Error::new(
-			"Could not resolve the local telemetry directory.",
-		));
+		return Err(Error::new(tr("telemetry-directory-error")));
 	};
 	fs::create_dir_all(directory).map_err(|error| {
-		storage_error("Could not create the local telemetry directory.", error)
+		storage_error(&tr("telemetry-directory-create-error"), error)
 	})?;
 	let file = OpenOptions::new()
 		.create(true)
@@ -490,11 +488,10 @@ fn lock(paths: &Paths) -> Result<File, Error> {
 		.write(true)
 		.open(&paths.lock)
 		.map_err(|error| {
-			storage_error("Could not open the local telemetry lock.", error)
+			storage_error(&tr("telemetry-lock-open-error"), error)
 		})?;
-	file.lock().map_err(|error| {
-		storage_error("Could not lock the local telemetry.", error)
-	})?;
+	file.lock()
+		.map_err(|error| storage_error(&tr("telemetry-lock-error"), error))?;
 	Ok(file)
 }
 
@@ -505,22 +502,16 @@ fn read_stats(paths: &Paths, enabled: bool) -> Result<Stats, Error> {
 			return Ok(Stats::new(enabled, marker_timestamp(paths)));
 		}
 		Err(error) => {
-			return Err(storage_error(
-				"Could not read the local telemetry.",
-				error,
-			));
+			return Err(storage_error(&tr("telemetry-read-error"), error));
 		}
 	};
 	let stats: Stats = serde_json::from_slice(&contents).map_err(|error| {
-		Error::with_debug(
-			"Could not read the local telemetry because it is invalid. Run `a365dt telemetry clear` to reset it.",
-			error,
-		)
+		Error::with_debug(tr("telemetry-invalid-error"), error)
 	})?;
 	if stats.schema_version != SCHEMA_VERSION {
-		return Err(Error::new(format!(
-			"Local telemetry schema {} is unsupported. Run `a365dt telemetry clear` to reset it.",
-			stats.schema_version
+		return Err(Error::new(tr_args(
+			"telemetry-schema-unsupported",
+			&[("version", stats.schema_version.into())],
 		)));
 	}
 	Ok(stats)
@@ -528,26 +519,23 @@ fn read_stats(paths: &Paths, enabled: bool) -> Result<Stats, Error> {
 
 fn write_stats(paths: &Paths, stats: &Stats) -> Result<(), Error> {
 	let Some(directory) = paths.data.parent() else {
-		return Err(Error::new(
-			"Could not resolve the local telemetry directory.",
-		));
+		return Err(Error::new(tr("telemetry-directory-error")));
 	};
 	fs::create_dir_all(directory).map_err(|error| {
-		storage_error("Could not create the local telemetry directory.", error)
+		storage_error(&tr("telemetry-directory-create-error"), error)
 	})?;
 	let contents = serde_json::to_vec(stats).map_err(|error| {
-		Error::with_debug("Could not prepare the local telemetry.", error)
+		Error::with_debug(tr("telemetry-prepare-error"), error)
 	})?;
 	// ponytail: telemetry tolerates a lost file on a crash; add atomic
 	// replacement if telemetry ever becomes recovery-critical.
-	fs::write(&paths.data, contents).map_err(|error| {
-		storage_error("Could not store the local telemetry.", error)
-	})
+	fs::write(&paths.data, contents)
+		.map_err(|error| storage_error(&tr("telemetry-store-error"), error))
 }
 
 fn is_disabled(paths: &Paths) -> Result<bool, Error> {
 	paths.disabled.try_exists().map_err(|error| {
-		storage_error("Could not inspect the local telemetry opt-out.", error)
+		storage_error(&tr("telemetry-opt-out-inspect-error"), error)
 	})
 }
 
@@ -559,29 +547,20 @@ fn marker_timestamp(paths: &Paths) -> Option<u64> {
 
 fn write_marker(paths: &Paths, at: u64) -> Result<(), Error> {
 	let Some(directory) = paths.disabled.parent() else {
-		return Err(Error::new(
-			"Could not resolve the local telemetry opt-out directory.",
-		));
+		return Err(Error::new(tr("telemetry-opt-out-directory-error")));
 	};
 	fs::create_dir_all(directory).map_err(|error| {
-		storage_error(
-			"Could not create the local telemetry opt-out directory.",
-			error,
-		)
+		storage_error(&tr("telemetry-opt-out-create-error"), error)
 	})?;
-	fs::write(&paths.disabled, at.to_string()).map_err(|error| {
-		storage_error("Could not disable the local telemetry.", error)
-	})
+	fs::write(&paths.disabled, at.to_string())
+		.map_err(|error| storage_error(&tr("telemetry-disable-error"), error))
 }
 
 fn remove_marker(paths: &Paths) -> Result<(), Error> {
 	match fs::remove_file(&paths.disabled) {
 		Ok(()) => Ok(()),
 		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(storage_error(
-			"Could not enable the local telemetry.",
-			error,
-		)),
+		Err(error) => Err(storage_error(&tr("telemetry-enable-error"), error)),
 	}
 }
 

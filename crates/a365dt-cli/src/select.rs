@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use fluent_bundle::FluentValue;
+
 use crate::{
 	api::{Embed, Episode, MediaOption, Series, Translation},
 	error::Error,
+	l10n::{tr, tr_args},
 	ui,
 };
 
@@ -44,10 +47,10 @@ pub struct PlannedRelease {
 
 pub fn choose_series(series: &[Series]) -> Result<Series, Error> {
 	if series.is_empty() {
-		return Err("No matching Anime365 series found.".into());
+		return Err(Error::new(tr("select-no-series")));
 	}
 	let rows = series_rows(series);
-	Ok(series[ui::choose("Search results", &rows)?].clone())
+	Ok(series[ui::choose(&tr("select-search-results"), &rows)?].clone())
 }
 
 pub(crate) fn series_rows(series: &[Series]) -> Vec<[String; 4]> {
@@ -58,11 +61,17 @@ pub(crate) fn series_rows(series: &[Series]) -> Vec<[String; 4]> {
 				item.title.clone(),
 				item.year
 					.map_or_else(|| "?".into(), |year| year.to_string()),
-				item.type_title.as_deref().unwrap_or("Unknown type").into(),
-				format!(
-					"{} episodes",
-					item.number_of_episodes
-						.map_or_else(|| "?".into(), |count| count.to_string())
+				item.type_title
+					.clone()
+					.unwrap_or_else(|| tr("select-unknown-type")),
+				item.number_of_episodes.map_or_else(
+					|| tr("select-episodes-unknown"),
+					|count| {
+						tr_args(
+							"select-episodes",
+							&[("count", FluentValue::from(i64::from(count)))],
+						)
+					},
 				),
 			]
 		})
@@ -71,8 +80,7 @@ pub(crate) fn series_rows(series: &[Series]) -> Vec<[String; 4]> {
 
 pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 	loop {
-		let input =
-			ui::prompt("Episode ranges (examples: 1-12,16-18; 0-12.5; 5):")?;
+		let input = ui::prompt(&tr("select-episode-ranges"))?;
 		let plan = match plan_range(episodes, &input) {
 			Ok(plan) => plan,
 			Err(error) => {
@@ -81,20 +89,20 @@ pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 			}
 		};
 		if !plan.missing.is_empty() {
-			ui::warning(format!(
-				"Unavailable episodes: {}",
-				comma(plan.missing.iter())
+			ui::warning(tr_args(
+				"select-unavailable-episodes",
+				&[("episodes", FluentValue::from(comma(plan.missing.iter())))],
 			));
 			match ui::choose(
-				"How should a365dt proceed?",
+				&tr("select-missing-action"),
 				&[
-					["Continue with available episodes".into()],
-					["Enter a different selection".into()],
-					["Cancel".into()],
+					[tr("select-continue-available")],
+					[tr("select-enter-different")],
+					[tr("select-cancel")],
 				],
 			)? {
 				1 => continue,
-				2 => return Err("Cancelled.".into()),
+				2 => return Err(Error::cancelled()),
 				_ => {}
 			}
 		}
@@ -105,7 +113,10 @@ pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 				.iter()
 				.map(|episode| episode.episode_full.as_str());
 			if ui::confirm(
-				&format!("Include fractional episodes {}?", comma(labels)),
+				&tr_args(
+					"select-fractional-confirm",
+					&[("episodes", FluentValue::from(comma(labels)))],
+				),
 				false,
 			)? {
 				selected.extend(plan.fractional);
@@ -113,7 +124,7 @@ pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {
 		}
 		selected.sort_by(episode_order);
 		if selected.is_empty() {
-			ui::warning("The selection contains no episodes.");
+			ui::warning(tr("select-empty"));
 			continue;
 		}
 		return Ok(selected);
@@ -160,7 +171,7 @@ pub fn choose_track(
 			.then_with(|| left.key.cmp(&right.key))
 	});
 	if tracks.is_empty() {
-		return Err("No translations cover any selected episode.".into());
+		return Err(Error::new(tr("select-no-translations")));
 	}
 	loop {
 		let rows = tracks
@@ -169,10 +180,15 @@ pub fn choose_track(
 				let row = [
 					format!("{}-{}", track.key.kind, track.key.language),
 					track.key.authors.clone(),
-					format!(
-						"{}/{} episodes",
-						track.releases.len(),
-						episodes.len()
+					tr_args(
+						"select-coverage",
+						&[
+							(
+								"count",
+								FluentValue::from(track.releases.len() as i64),
+							),
+							("total", FluentValue::from(episodes.len() as i64)),
+						],
 					),
 				];
 				if track.releases.len() == episodes.len() {
@@ -182,20 +198,23 @@ pub fn choose_track(
 				}
 			})
 			.collect::<Vec<_>>();
-		let track = &tracks[ui::choose("Translation tracks", &rows)?];
+		let track = &tracks[ui::choose(&tr("select-translations"), &rows)?];
 		let missing = episodes
 			.iter()
 			.filter(|episode| !track.releases.contains_key(&episode.id))
 			.collect::<Vec<_>>();
 		if !missing.is_empty()
 			&& !ui::confirm(
-				&format!(
-					"Download only available episodes and skip {}?",
-					comma(
-						missing
-							.iter()
-							.map(|episode| episode.episode_full.as_str())
-					)
+				&tr_args(
+					"select-skip-missing-confirm",
+					&[(
+						"episodes",
+						FluentValue::from(comma(
+							missing
+								.iter()
+								.map(|episode| episode.episode_full.as_str()),
+						)),
+					)],
 				),
 				false,
 			)? {
@@ -225,7 +244,7 @@ pub fn choose_resolutions(
 		}
 	}
 	if coverage.is_empty() {
-		return Err("Anime365 returned no downloadable resolutions.".into());
+		return Err(Error::new(tr("select-no-resolutions")));
 	}
 	let available = coverage.into_iter().rev().collect::<Vec<_>>();
 	let rows = available
@@ -233,7 +252,13 @@ pub fn choose_resolutions(
 		.map(|(height, count)| {
 			let row = [
 				format!("{height}p"),
-				format!("{count}/{} episodes", releases.len()),
+				tr_args(
+					"select-coverage",
+					&[
+						("count", FluentValue::from(*count as i64)),
+						("total", FluentValue::from(releases.len() as i64)),
+					],
+				),
 			];
 			if *count == releases.len() {
 				row
@@ -242,7 +267,8 @@ pub fn choose_resolutions(
 			}
 		})
 		.collect::<Vec<_>>();
-	let preferred = available[ui::choose("Preferred resolution", &rows)?].0;
+	let preferred =
+		available[ui::choose(&tr("select-preferred-resolution"), &rows)?].0;
 	let mut chosen = vec![preferred; releases.len()];
 	let mut fallback_groups: BTreeMap<Vec<u16>, Vec<usize>> = BTreeMap::new();
 	for (index, release) in releases.iter().enumerate() {
@@ -253,23 +279,28 @@ pub fn choose_resolutions(
 	}
 	for (options, indexes) in fallback_groups {
 		if options.is_empty() {
-			return Err(format!(
-				"No downloadable resolution for episodes {}.",
-				comma(indexes.iter().map(|index| {
-					releases[*index].episode.episode_full.as_str()
-				}))
-			)
-			.into());
+			return Err(Error::new(tr_args(
+				"select-no-resolution-for",
+				&[(
+					"episodes",
+					FluentValue::from(comma(indexes.iter().map(|index| {
+						releases[*index].episode.episode_full.as_str()
+					}))),
+				)],
+			)));
 		}
 		let labels = options
 			.iter()
 			.map(|height| [format!("{height}p")])
 			.collect::<Vec<_>>();
-		let title = format!(
-			"Fallback for episodes {}",
-			comma(indexes.iter().map(|index| {
-				releases[*index].episode.episode_full.as_str()
-			}))
+		let title = tr_args(
+			"select-resolution-fallback",
+			&[(
+				"episodes",
+				FluentValue::from(comma(indexes.iter().map(|index| {
+					releases[*index].episode.episode_full.as_str()
+				}))),
+			)],
 		);
 		let height = options[ui::choose(&title, &labels)?];
 		for index in indexes {
@@ -287,7 +318,10 @@ pub fn choose_resolutions(
 				.find(|option| option.height == height)
 				.and_then(|option| option.url.clone())
 				.ok_or_else(|| {
-					format!("Anime365 omitted the {height}p media URL")
+					tr_args(
+						"select-missing-media-url",
+						&[("height", FluentValue::from(i64::from(height)))],
+					)
 				})?;
 			Ok(PlannedRelease {
 				episode: release.episode,
@@ -301,8 +335,7 @@ pub fn choose_resolutions(
 }
 
 fn plan_range(episodes: &[Episode], input: &str) -> Result<RangePlan, String> {
-	let invalid_range = "Enter ascending ranges no wider than 10,000 episodes \
-		after merging overlaps.";
+	let invalid_range = tr("select-invalid-range");
 	let mut ranges = input
 		.split(',')
 		.map(|input| {
@@ -314,7 +347,7 @@ fn plan_range(episodes: &[Episode], input: &str) -> Result<RangePlan, String> {
 				(value, value)
 			};
 			if start > end {
-				return Err(invalid_range.into());
+				return Err(invalid_range.clone());
 			}
 			Ok((start, end))
 		})
@@ -331,7 +364,7 @@ fn plan_range(episodes: &[Episode], input: &str) -> Result<RangePlan, String> {
 		}
 	}
 	if merged.iter().any(|(start, end)| end - start > 10_000.0) {
-		return Err(invalid_range.into());
+		return Err(invalid_range);
 	}
 	let ranges = merged;
 	let mut whole = Vec::new();
@@ -371,7 +404,7 @@ fn number(input: &str) -> Result<f64, String> {
 		.parse::<f64>()
 		.ok()
 		.filter(|number| number.is_finite() && *number >= 0.0)
-		.ok_or_else(|| "Episode numbers must be non-negative numbers.".into())
+		.ok_or_else(|| tr("select-invalid-episode-number"))
 }
 
 fn heights(embed: &Embed) -> Vec<u16> {
