@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/Gridness/a365dt/compare/v0.7.2...v0.7.3) (2026-07-28)
+
+
+### Bug Fixes
+
+* **cli:** improve update contrast and dev workflow ([#30](https://github.com/Gridness/a365dt/issues/30)) ([8a8185f](https://github.com/Gridness/a365dt/commit/8a8185ff8d588d492096790d7f8557e04aa62eff))
+
 ## [0.7.2](https://github.com/Gridness/a365dt/compare/v0.7.1...v0.7.2) (2026-07-28)
 
 
