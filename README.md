@@ -55,6 +55,11 @@ Start the interactive search:
 a365dt
 ```
 
+Interactive sessions show one bundled Tip and check GitHub for a newer stable
+release at most once per day. Update checks time out after two seconds and
+fail silently; when an update is available, a365dt shows instructions for the
+detected installation channel.
+
 Prefill it with a title or open an Anime365 catalogue URL directly:
 
 ```console

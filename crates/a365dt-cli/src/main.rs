@@ -10,6 +10,7 @@ mod search;
 mod select;
 mod series_cache;
 mod series_search;
+mod startup;
 mod telemetry;
 mod ui;
 
@@ -350,6 +351,7 @@ async fn run(
 		ui::success("Local cache cleared");
 		return Ok(ExitCode::SUCCESS);
 	}
+	startup::show().await;
 	let access_token = auth::access_token()?;
 	let api =
 		Anime365::new(access_token.value().to_owned(), telemetry.clone())?;

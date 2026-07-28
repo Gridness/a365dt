@@ -500,9 +500,30 @@ jobs:
         if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         env:
-          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+          GH_TOKEN: ${{ secrets.WINGET_PAT }}
         run: |
-          ./wingetcreate.exe submit --prtitle "Gridness.a365dt version $env:VERSION" --token $env:WINGET_PAT --no-open winget
+          $submission = ./wingetcreate.exe submit --prtitle "Gridness.a365dt version $env:VERSION" --token $env:GH_TOKEN --no-open winget 2>&1
+          $exitCode = $LASTEXITCODE
+          $submission | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) {
+            throw "WingetCreate failed with exit code $exitCode"
+          }
+
+          $match = [regex]::Match(($submission -join "`n"), 'https://github\.com/microsoft/winget-pkgs/pull/(\d+)')
+          if (!$match.Success) {
+            throw "WingetCreate did not report the created pull request"
+          }
+          $pr = $match.Groups[1].Value
+          $response = gh api "repos/microsoft/winget-pkgs/pulls/$pr"
           if ($LASTEXITCODE -ne 0) {
-            throw "WingetCreate failed with exit code $LASTEXITCODE"
+            throw "Failed to read WinGet pull request $pr"
+          }
+          $body = (($response -join "`n") | ConvertFrom-Json).body.Replace('- [ ]', '- [x]')
+          gh api --method PATCH "repos/microsoft/winget-pkgs/pulls/$pr" --raw-field "body=$body" --silent
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to update WinGet pull request $pr"
+          }
+          gh api --method POST "repos/microsoft/winget-pkgs/issues/$pr/comments" --raw-field 'body=@microsoft-github-policy-service agree' --silent
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to accept the Microsoft CLA on WinGet pull request $pr"
           }
