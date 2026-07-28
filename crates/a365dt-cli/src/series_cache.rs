@@ -5,12 +5,11 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::{api::Series, search::normalize_query};
+use crate::{api::Series, app_files, search::normalize_query};
 
-const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Cache {
@@ -73,7 +72,7 @@ pub fn store(cache: &Cache) {
 }
 
 pub fn prune() -> io::Result<()> {
-	cache_directory().map_or(Ok(()), |path| prune_directory(&path))
+	app_files::cache_directory().map_or(Ok(()), |path| prune_directory(&path))
 }
 
 fn prune_directory(path: &Path) -> io::Result<()> {
@@ -84,13 +83,8 @@ fn prune_directory(path: &Path) -> io::Result<()> {
 	}
 }
 
-fn cache_directory() -> Option<PathBuf> {
-	ProjectDirs::from("", "", "a365dt")
-		.map(|directories| directories.cache_dir().to_owned())
-}
-
-fn cache_path() -> Option<PathBuf> {
-	cache_directory().map(|directory| directory.join("series.json"))
+pub(crate) fn cache_path() -> Option<PathBuf> {
+	app_files::cache_directory().map(|directory| directory.join("series.json"))
 }
 
 fn now() -> u64 {

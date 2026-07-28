@@ -1,9 +1,13 @@
 use std::sync::Mutex;
 
+use clap::Parser;
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 
-use super::cancel_download;
+use super::{
+	Args, CacheCommand, Commands, TelemetryCommand, cancel_download,
+	command_line::route_title_query,
+};
 
 #[test]
 fn routes_interrupts_to_active_downloads() {
@@ -17,4 +21,103 @@ fn routes_interrupts_to_active_downloads() {
 		),
 		(true, true)
 	);
+}
+
+#[test]
+fn forces_multi_word_command_names_through_title_search() {
+	let args =
+		Args::try_parse_from(["a365dt", "--query", "cache", "prune"]).unwrap();
+
+	assert_eq!(
+		(args.forced_query, args.query, args.command.is_none(),),
+		(
+			vec!["cache".to_owned(), "prune".to_owned()],
+			Vec::<String>::new(),
+			true
+		)
+	);
+}
+
+#[test]
+fn parses_telemetry_control_commands() {
+	let args =
+		Args::try_parse_from(["a365dt", "telemetry", "disable"]).unwrap();
+
+	assert!(matches!(
+		args.command,
+		Some(Commands::Telemetry {
+			command: TelemetryCommand::Disable { query }
+		})
+			if query.is_empty()
+	));
+}
+
+#[test]
+fn parses_purge_confirmation_options() {
+	for (arguments, expected) in [
+		(&["a365dt", "purge"][..], false),
+		(&["a365dt", "purge", "-y"][..], true),
+		(&["a365dt", "purge", "--yes"][..], true),
+	] {
+		let args = Args::try_parse_from(arguments.iter().copied()).unwrap();
+
+		assert!(matches!(
+			args.command,
+			Some(Commands::Purge { yes }) if yes == expected
+		));
+	}
+}
+
+#[test]
+fn routes_unknown_command_arguments_through_title_search() {
+	for arguments in [
+		&["a365dt", "cache", "this"][..],
+		&["a365dt", "cache", "prune", "this"][..],
+		&["a365dt", "completions", "this"][..],
+		&["a365dt", "completions", "zsh", "this"][..],
+		&["a365dt", "doctor", "elise"][..],
+		&["a365dt", "telemetry", "this"][..],
+		&["a365dt", "telemetry", "show", "this"][..],
+	] {
+		let mut args = Args::try_parse_from(arguments.iter().copied()).unwrap();
+
+		route_title_query(&mut args);
+
+		assert_eq!(
+			(args.query, args.command.is_none()),
+			(
+				arguments[1..].iter().copied().map(str::to_owned).collect(),
+				true
+			)
+		);
+	}
+}
+
+#[test]
+fn preserves_existing_commands() {
+	let mut cache = Args::try_parse_from(["a365dt", "cache", "prune"]).unwrap();
+	let mut completions =
+		Args::try_parse_from(["a365dt", "completions", "zsh"]).unwrap();
+	let mut doctor = Args::try_parse_from(["a365dt", "doctor"]).unwrap();
+
+	route_title_query(&mut cache);
+	route_title_query(&mut completions);
+	route_title_query(&mut doctor);
+
+	assert!(matches!(
+		cache.command,
+		Some(Commands::Cache {
+			command: CacheCommand::Prune { query }
+		})
+			if query.is_empty()
+	));
+	assert!(matches!(
+		completions.command,
+		Some(Commands::Completions { arguments })
+			if arguments == ["zsh"]
+	));
+	assert!(matches!(
+		doctor.command,
+		Some(Commands::Doctor { query }) if query.is_empty()
+	));
 }

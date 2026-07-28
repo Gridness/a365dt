@@ -160,7 +160,7 @@ fn signature(input: &str) -> u64 {
 	})
 }
 
-fn typo_budget(len: usize) -> usize {
+pub(crate) fn typo_budget(len: usize) -> usize {
 	match len {
 		0..=2 => 0,
 		3..=5 => 1,

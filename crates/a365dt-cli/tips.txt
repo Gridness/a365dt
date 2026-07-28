@@ -1,0 +1,7 @@
+Use `--query` when a Series title matches a command name.
+Run `a365dt doctor` to inspect Anime365, cache, telemetry, and build health.
+Install [FFmpeg](https://ffmpeg.org/) to mux separate ASS subtitles into MKV files.
+Run the same command again to resume preserved `.part` downloads.
+Use `--jobs N` to change download concurrency.
+Use `a365dt telemetry show` to inspect locally collected fields.
+Use `--output DIR` to choose the download location.

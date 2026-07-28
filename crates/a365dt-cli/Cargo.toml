@@ -16,8 +16,10 @@ console.workspace = true
 directories.workspace = true
 indicatif.workspace = true
 image.workspace = true
+pulldown-cmark.workspace = true
 rapidfuzz.workspace = true
 reqwest.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -32,4 +34,12 @@ pretty_assertions.workspace = true
 
 [[bench]]
 name = "search"
+harness = false
+
+[[bench]]
+name = "doctor"
+harness = false
+
+[[bench]]
+name = "telemetry"
 harness = false

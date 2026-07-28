@@ -4,6 +4,22 @@ a365dt downloads user-selected Anime365 releases while keeping episode and trans
 
 ## Language
 
+**Interactive session**:
+An a365dt run in which a person searches for a Series and makes download choices. Help, version reporting, shell-completion generation, and maintenance commands are not Interactive sessions.
+_Avoid_: Launch, invocation
+
+**Tip**:
+A short, single-line piece of a365dt guidance shown at the beginning of an Interactive session. Its source text is Markdown.
+_Avoid_: Hint, startup message
+
+**Available update**:
+A published stable a365dt release whose version is semantically higher than the running version.
+_Avoid_: Latest version, new version
+
+**Installation channel**:
+The distribution route through which the running a365dt executable was installed: Homebrew, WinGet, Cargo, or manual when no managed route can be identified.
+_Avoid_: Installation type, package manager
+
 **Series**:
 An Anime365 title that contains episodes.
 _Avoid_: Anime
@@ -19,6 +35,10 @@ _Avoid_: Acronym, abbreviation
 **Series catalogue**:
 The collection of Series available for discovery on Anime365.
 _Avoid_: Title index, title database
+
+**Catalogue hit**:
+A Series selection that reuses a Series already present in the persisted Series catalogue when the search starts. Direct URLs, cancelled searches, and failed searches are neither hits nor misses.
+_Avoid_: Cache hit, API cache hit
 
 **Episode**:
 A selectable installment of a Series, identified by its Anime365 episode ID and displayed episode label.

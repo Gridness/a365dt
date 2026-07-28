@@ -1,8 +1,16 @@
-use std::sync::LazyLock;
+use std::{
+	sync::{LazyLock, Mutex},
+	time::Instant,
+};
 
+#[allow(dead_code)]
+#[path = "../src/telemetry/performance.rs"]
+mod performance;
+#[allow(dead_code)]
 #[path = "../src/search.rs"]
 mod search;
 
+use performance::{Performance, Work};
 use search::Search;
 
 static ROWS: LazyLock<Vec<[String; 4]>> = LazyLock::new(|| {
@@ -28,6 +36,8 @@ static ROWS: LazyLock<Vec<[String; 4]>> = LazyLock::new(|| {
 });
 static CATALOGUE: LazyLock<Search> =
 	LazyLock::new(|| Search::new(ROWS.as_slice()));
+static PERFORMANCE: LazyLock<Mutex<Performance>> =
+	LazyLock::new(Mutex::default);
 
 fn main() {
 	divan::main();
@@ -42,6 +52,23 @@ fn main() {
 fn filter_catalogue(query: &str) -> Vec<usize> {
 	divan::black_box(CATALOGUE.len());
 	CATALOGUE.ranked(divan::black_box(query))
+}
+
+#[divan::bench(args = [
+	"steins gate",
+	"stiens gate",
+	"gate steins",
+	"definitely absent",
+])]
+fn filter_catalogue_with_telemetry(query: &str) -> Vec<usize> {
+	let started = Instant::now();
+	let matches = CATALOGUE.ranked(divan::black_box(query));
+	PERFORMANCE.lock().unwrap().record(
+		"search.rank",
+		started.elapsed(),
+		Work::Items(u64::try_from(CATALOGUE.len()).unwrap()),
+	);
+	matches
 }
 
 #[divan::bench]

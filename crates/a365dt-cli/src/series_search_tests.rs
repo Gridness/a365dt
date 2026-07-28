@@ -2,8 +2,12 @@ use std::collections::BTreeMap;
 
 use pretty_assertions::assert_eq;
 
-use super::{api_query, ranked_series, suggestions, upsert};
-use crate::{api::Series, series_cache::Cache};
+use super::{api_query, catalogue_use, ranked_series, suggestions, upsert};
+use crate::{
+	api::Series,
+	series_cache::Cache,
+	telemetry::{CatalogueUse, Recorder},
+};
 
 fn series(id: u64, title: &str, year: u16) -> Series {
 	Series {
@@ -25,7 +29,7 @@ fn finds_titles_with_reversed_words() {
 	];
 
 	assert_eq!(
-		ranked_series(&catalogue, "битва магическая", 10),
+		ranked_series(&catalogue, "битва магическая", 10, &Recorder::default(),),
 		vec![catalogue[0].clone()]
 	);
 	assert_eq!(api_query("битва магическая"), "магическая");
@@ -57,13 +61,21 @@ fn prioritizes_learned_and_server_suggestions_without_title_matches() {
 	};
 
 	assert_eq!(
-		suggestions(&cache, "jjk", &[1], 10),
+		suggestions(&cache, "jjk", &[1], 10, &Recorder::default()),
 		vec![catalogue[0].clone()]
 	);
 
 	cache.aliases.insert("jjk".into(), 2);
 	assert_eq!(
-		suggestions(&cache, "jjk", &[1, 2], 10),
+		suggestions(&cache, "jjk", &[1, 2], 10, &Recorder::default(),),
 		vec![catalogue[1].clone(), catalogue[0].clone()]
+	);
+}
+
+#[test]
+fn classifies_selection_by_the_persisted_catalogue() {
+	assert_eq!(
+		[catalogue_use(&[1, 2], 2), catalogue_use(&[1, 2], 3)],
+		[CatalogueUse::Hit, CatalogueUse::Miss]
 	);
 }
