@@ -32,7 +32,7 @@ const TIPS: &[&str] = &[
 const LATEST_RELEASE_URL: &str =
 	"https://api.github.com/repos/Gridness/a365dt/releases/latest";
 const CACHE_FILE: &str = "latest-release.json";
-const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub async fn show() {
