@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/Gridness/a365dt/compare/v0.7.0...v0.7.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **cli:** align download progress metrics ([#26](https://github.com/Gridness/a365dt/issues/26)) ([cf12ce4](https://github.com/Gridness/a365dt/commit/cf12ce446c86b61af39af955eb3abefed3f0a221))
+
 ## [0.7.0](https://github.com/Gridness/a365dt/compare/v0.6.3...v0.7.0) (2026-07-28)
 
 
