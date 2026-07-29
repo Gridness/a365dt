@@ -5,7 +5,6 @@ mod command_line;
 mod doctor;
 mod download;
 mod error;
-mod l10n;
 mod poster;
 mod search;
 mod select;
@@ -25,17 +24,15 @@ mod tests;
 
 use std::{
 	collections::VecDeque,
-	ffi::OsString,
 	num::NonZeroUsize,
 	path::PathBuf,
 	process::{self, ExitCode},
 	sync::{Arc, Mutex},
 };
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{Shell, generate};
 use console::style;
-use fluent_bundle::FluentValue;
 use indicatif::{HumanBytes, HumanDuration};
 use tokio::{fs, process::Command, signal, sync::watch, task::JoinSet};
 
@@ -43,7 +40,6 @@ use crate::{
 	api::{Anime365, Episode, Translation},
 	download::{Job, Status},
 	error::Error,
-	l10n::{Language, Override, tr, tr_args},
 	select::Release,
 };
 
@@ -51,9 +47,7 @@ use crate::{
 #[command(
 	name = "a365dt",
 	version,
-	about = "Download Anime365 episodes without guessing translations",
-	disable_help_flag = true,
-	disable_version_flag = true
+	about = "Download Anime365 episodes without guessing translations"
 )]
 struct Args {
 	#[command(subcommand)]
@@ -80,9 +74,6 @@ struct Args {
 	/// Show technical error details.
 	#[arg(long, global = true)]
 	debug: bool,
-
-	#[arg(long, global = true, value_name = "LANG")]
-	lang: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -163,21 +154,13 @@ enum TelemetryCommand {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+	let mut args = Args::parse();
 	ui::init();
-	let arguments = std::env::args_os().collect::<Vec<_>>();
-	let language = match run_language(&arguments) {
-		Ok(language) => language,
-		Err(code) => return code,
-	};
-	l10n::init(language);
-	let mut args = match command_line::parse(arguments) {
-		Ok(args) => args,
-		Err(code) => return code,
-	};
-	let _ = &args.lang;
 	let debug = args.debug;
 	if !args.forced_query.is_empty() && args.command.is_some() {
-		ui::failure(tr("query-command-conflict"));
+		ui::failure(
+			"`--query` cannot be combined with a command. Remove the command or search terms.",
+		);
 		return ExitCode::FAILURE;
 	}
 	let suggestions = command_line::suggestions(&args);
@@ -190,7 +173,12 @@ async fn main() -> ExitCode {
 		let confirmed = if *yes {
 			true
 		} else {
-			match ui::confirm(&ui::red(tr("purge-confirm")), false) {
+			match ui::confirm(
+				&ui::red(
+					"Permanently remove all local a365dt application data and saved credentials?",
+				),
+				false,
+			) {
 				Ok(confirmed) => confirmed,
 				Err(error) => {
 					ui::failure(error.render(debug));
@@ -199,15 +187,19 @@ async fn main() -> ExitCode {
 			}
 		};
 		if !confirmed {
-			ui::note(tr("purge-cancelled"));
+			ui::note("Purge cancelled.");
 			return ExitCode::SUCCESS;
 		}
-		let files = app_files::purge()
-			.map_err(|error| Error::with_debug(tr("purge-error"), error));
+		let files = app_files::purge().map_err(|error| {
+			Error::with_debug(
+				"Could not remove all local a365dt application files.",
+				error,
+			)
+		});
 		let token = auth::remove_stored_token();
 		return match files.and(token) {
 			Ok(()) => {
-				ui::success(tr("purge-success"));
+				ui::success("Local a365dt application data removed");
 				ExitCode::SUCCESS
 			}
 			Err(error) => {
@@ -239,14 +231,14 @@ async fn main() -> ExitCode {
 		match signal::ctrl_c().await {
 			Ok(()) => {
 				eprintln!();
-				ui::failure(tr("cancelled"));
+				ui::failure("Cancelled.");
 				if !cancel_download(&interrupt_download) {
 					process::exit(130);
 				}
 			}
 			Err(error) => {
 				ui::failure(
-					Error::with_debug(tr("ctrl-c-listen-error"), error)
+					Error::with_debug("Could not listen for Ctrl+C.", error)
 						.render(debug),
 				);
 				process::exit(1);
@@ -259,7 +251,7 @@ async fn main() -> ExitCode {
 		generate(
 			completion_shell(arguments)
 				.expect("invalid completion shells return to title search"),
-			&mut command_line::localized_command(),
+			&mut Args::command(),
 			"a365dt",
 			&mut std::io::stdout(),
 		);
@@ -278,7 +270,7 @@ async fn main() -> ExitCode {
 		}
 		Ok(code) => (code, telemetry::CommandOutcome::Failure),
 		Err(error) => {
-			let outcome = if error.is_cancelled() {
+			let outcome = if error.message() == "Cancelled." {
 				telemetry::CommandOutcome::Cancelled
 			} else {
 				telemetry::CommandOutcome::Failure
@@ -292,56 +284,6 @@ async fn main() -> ExitCode {
 		ui::warning(error.render(debug));
 	}
 	code
-}
-
-fn run_language(arguments: &[OsString]) -> Result<Language, ExitCode> {
-	let system = l10n::system_language();
-	match l10n::language_override(arguments) {
-		Override::Automatic => Ok(system),
-		Override::Supported(language) => Ok(language),
-		Override::Unsupported(language) => {
-			ui::failure(l10n::tr_for_args(
-				system,
-				"language-unsupported",
-				&[("language", FluentValue::from(language))],
-			));
-			if !ui::can_prompt()
-				|| !ui::confirm(
-					&l10n::tr_for(system, "language-use-english"),
-					false,
-				)
-				.unwrap_or_else(|error| {
-					ui::failure(error.render(false));
-					false
-				}) {
-				return Err(ExitCode::FAILURE);
-			}
-			Ok(Language::English)
-		}
-		Override::Invalid { value, suggestion } => {
-			let message = l10n::tr_for_args(
-				system,
-				"language-invalid",
-				&[("language", FluentValue::from(value))],
-			);
-			let message = suggestion.map_or(message.clone(), |suggestion| {
-				l10n::tr_for_args(
-					system,
-					"language-error-with-suggestion",
-					&[
-						("message", FluentValue::from(message)),
-						("suggestion", FluentValue::from(suggestion)),
-					],
-				)
-			});
-			ui::failure(message);
-			Err(ExitCode::from(2))
-		}
-		Override::Missing => {
-			ui::failure(l10n::tr_for(system, "language-missing"));
-			Err(ExitCode::from(2))
-		}
-	}
 }
 
 fn completion_shell(arguments: &[String]) -> Option<Shell> {
@@ -398,24 +340,24 @@ async fn run(
 	active_download: Arc<Mutex<Option<watch::Sender<bool>>>>,
 	telemetry: &telemetry::Recorder,
 ) -> Result<ExitCode, Error> {
-	ui::heading(tr("app-heading"));
+	ui::heading("a365dt  ◆  Anime365 downloader");
 	if let Some(Commands::Cache {
 		command: CacheCommand::Prune { .. },
 	}) = args.command
 	{
 		series_cache::prune().map_err(|error| {
-			Error::with_debug(tr("cache-clear-error"), error)
+			Error::with_debug("Could not clear the local cache.", error)
 		})?;
-		ui::success(tr("cache-clear-success"));
+		ui::success("Local cache cleared");
 		return Ok(ExitCode::SUCCESS);
 	}
 	startup::show().await;
 	let access_token = auth::access_token()?;
 	let api =
 		Anime365::new(access_token.value().to_owned(), telemetry.clone())?;
-	ui::note(tr("auth-validating"));
+	ui::note("Validating Anime365 access…");
 	api.validate().await?;
-	ui::success(tr("auth-success"));
+	ui::success("Authenticated");
 	auth::store_if_requested(&access_token)?;
 
 	let query = if args.forced_query.is_empty() {
@@ -426,24 +368,17 @@ async fn run(
 	let selected = series_search::choose(&api, query, telemetry).await?;
 	telemetry.record_catalogue(selected.catalogue);
 	let series = selected.series;
-	ui::success(tr_args(
-		"series-selected",
-		&[("title", FluentValue::from(series.title.as_str()))],
-	));
+	ui::success(format!("Selected {}", series.title));
 	poster::show(&api, &series).await;
 	let episodes = select::choose_episodes(&series.episodes)?;
 	let translations = api.translations(series.id).await?;
 	let (track, releases) = select::choose_track(translations, &episodes)?;
-	ui::success(tr_args(
-		"translation-selected",
-		&[
-			("kind", FluentValue::from(track.kind.as_str())),
-			("language", FluentValue::from(track.language.as_str())),
-			("authors", FluentValue::from(track.authors.as_str())),
-		],
+	ui::success(format!(
+		"Selected {}-{} by {}",
+		track.kind, track.language, track.authors
 	));
 
-	ui::note(tr("media-loading"));
+	ui::note("Loading available media…");
 	let releases = fetch_embeds(&api, releases, args.jobs.get()).await?;
 	let planned = select::choose_resolutions(releases)?;
 	let separate_subtitles = planned
@@ -452,16 +387,20 @@ async fn run(
 		.count();
 	let embedded = planned.len() - separate_subtitles;
 	if track.kind == "sub" && embedded > 0 {
-		ui::note(tr_args(
-			"subtitles-embedded",
-			&[("count", FluentValue::from(embedded as i64))],
+		ui::note(format!(
+			"{embedded} episode(s) have subtitles contained in the MP4."
 		));
 	}
 	let mux = if separate_subtitles > 0 && ffmpeg_available().await {
-		ui::confirm(&tr("mux-confirm"), false)?
+		ui::confirm(
+			"Mux separate ASS subtitles into MKV after download?",
+			false,
+		)?
 	} else {
 		if separate_subtitles > 0 {
-			ui::warning(tr("mux-unavailable"));
+			ui::warning(
+				"ffmpeg is unavailable; keeping MP4 and ASS files separate.",
+			);
 		}
 		false
 	};
@@ -469,17 +408,14 @@ async fn run(
 	let directory = args.output.join(download::sanitize(&series.title, 100));
 	fs::create_dir_all(&directory).await.map_err(|error| {
 		Error::with_debug(
-			tr_args(
-				"output-create-error",
-				&[("path", FluentValue::from(directory.display().to_string()))],
+			format!(
+				"Could not create output directory {}.",
+				directory.display()
 			),
 			error,
 		)
 	})?;
-	ui::note(tr_args(
-		"output-directory",
-		&[("path", FluentValue::from(directory.display().to_string()))],
-	));
+	ui::note(format!("Output: {}", directory.display()));
 	let jobs = planned
 		.into_iter()
 		.map(|release| Job::new(release, directory.clone(), mux))
@@ -525,7 +461,10 @@ async fn fetch_embeds(
 	let mut result = Vec::new();
 	while let Some(joined) = active.join_next().await {
 		result.push(joined.map_err(|error| {
-			Error::with_debug(tr("media-task-error"), error)
+			Error::with_debug(
+				"An internal task stopped while loading episode media.",
+				error,
+			)
 		})??);
 		spawn_embed(&mut active, &mut pending, api);
 	}
@@ -579,34 +518,34 @@ fn print_summary(
 			.count()
 	};
 	let bytes = summary.outcomes.iter().map(|outcome| outcome.bytes).sum();
-	ui::heading(tr("summary-heading"));
+	ui::heading("Batch summary");
 	ui::grid(&[
 		[
-			style(tr("summary-downloaded")).green().bold().to_string(),
+			style("Downloaded").green().bold().to_string(),
 			count(Status::Downloaded).to_string(),
 		],
 		[
-			style(tr("summary-skipped")).cyan().bold().to_string(),
+			style("Skipped").cyan().bold().to_string(),
 			count(Status::Skipped).to_string(),
 		],
 		[
-			style(tr("summary-failed")).red().bold().to_string(),
+			style("Failed").red().bold().to_string(),
 			(count(Status::Failed) + count(Status::MuxFailed)).to_string(),
 		],
 		[
-			style(tr("summary-interrupted")).yellow().bold().to_string(),
+			style("Interrupted").yellow().bold().to_string(),
 			count(Status::Interrupted).to_string(),
 		],
 		[
-			style(tr("summary-size")).bold().to_string(),
+			style("Size").bold().to_string(),
 			HumanBytes(bytes).to_string(),
 		],
 		[
-			style(tr("summary-elapsed")).bold().to_string(),
+			style("Elapsed").bold().to_string(),
 			HumanDuration(summary.elapsed).to_string(),
 		],
 		[
-			style(tr("summary-output")).bold().to_string(),
+			style("Output").bold().to_string(),
 			directory.display().to_string(),
 		],
 	]);
@@ -616,12 +555,10 @@ fn print_summary(
 			Status::Failed | Status::MuxFailed | Status::Interrupted
 		)
 	}) {
-		ui::failure(tr_args(
-			"summary-error",
-			&[
-				("episode", FluentValue::from(outcome.episode.as_str())),
-				("error", FluentValue::from(outcome.detail.render(debug))),
-			],
+		ui::failure(format!(
+			"{}: {}",
+			outcome.episode,
+			outcome.detail.render(debug)
 		));
 	}
 	if summary
@@ -629,6 +566,6 @@ fn print_summary(
 		.iter()
 		.any(|outcome| outcome.status == Status::Failed)
 	{
-		ui::note(tr("summary-resume"));
+		ui::note("Run the same command again to resume preserved .part files.");
 	}
 }

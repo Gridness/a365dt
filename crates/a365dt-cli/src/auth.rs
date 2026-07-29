@@ -1,6 +1,7 @@
-use std::process::{Command, Stdio};
-
-use fluent_bundle::FluentValue;
+use std::{
+	io::{self, IsTerminal},
+	process::{Command, Stdio},
+};
 
 #[cfg(target_os = "macos")]
 use security_framework::{
@@ -10,14 +11,14 @@ use security_framework::{
 
 #[cfg(target_os = "macos")]
 use crate::app_files;
-use crate::{
-	error::Error,
-	l10n::{tr, tr_args},
-	ui,
-};
+use crate::{error::Error, ui};
 
 const ACCESS_TOKEN_URL: &str =
 	"https://anime365.ru/api/accessToken?app=app-70510a2eebd4c6a4aa6e4a0e";
+const ACCESS_TOKEN_HELP: &str = r#"No Anime365 access token was found and a365dt cannot prompt here.
+
+Run a365dt in an interactive terminal, or provide the token through the
+ANIME365_ACCESS_TOKEN process environment variable."#;
 #[cfg(target_os = "macos")]
 const KEYCHAIN_ITEM: &str = "anime365-access-token";
 #[cfg(target_os = "macos")]
@@ -50,27 +51,26 @@ pub(crate) fn access_token() -> Result<AccessToken, Error> {
 	}
 	#[cfg(target_os = "macos")]
 	if let Some(token) = keychain_token() {
-		ui::note(tr("auth-keychain-token"));
+		ui::note("Using Anime365 access token from macOS Keychain.");
 		return Ok(AccessToken::Keychain(token));
 	}
 	browser_access_token()
 }
 
 fn browser_access_token() -> Result<AccessToken, Error> {
-	if !ui::can_prompt() {
-		return Err(Error::new(tr("auth-token-unavailable")));
+	if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+		return Err(Error::new(ACCESS_TOKEN_HELP));
 	}
-	ui::note(tr_args(
-		"auth-opening",
-		&[("url", FluentValue::from(ACCESS_TOKEN_URL))],
-	));
+	ui::note(format!("Opening {ACCESS_TOKEN_URL}"));
 	if !open_browser(ACCESS_TOKEN_URL) {
-		ui::warning(tr("auth-browser-error"));
+		ui::warning("Could not open the browser automatically.");
 	}
-	ui::note(tr("auth-sign-in"));
-	let token = ui::secret(&tr("auth-token-prompt"))?;
+	ui::note(
+		"If Anime365 says authorization is required, sign in and reload the page.",
+	);
+	let token = ui::secret("Paste access token:")?;
 	if token.is_empty() {
-		return Err(Error::new(tr("auth-token-empty")));
+		return Err(Error::new("The Anime365 access token cannot be empty."));
 	}
 	Ok(AccessToken::Browser(token))
 }
@@ -92,9 +92,8 @@ fn keychain_token() -> Option<String> {
 				}
 				Ok(_) => None,
 				Err(error) => {
-					ui::warning(tr_args(
-						"auth-keychain-read-error-detail",
-						&[("error", FluentValue::from(error.to_string()))],
+					ui::warning(format!(
+						"Could not read the Anime365 access token from macOS Keychain: {error}"
 					));
 					None
 				}
@@ -105,9 +104,8 @@ fn keychain_token() -> Option<String> {
 		}),
 		Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => None,
 		Err(error) => {
-			ui::warning(tr_args(
-				"auth-keychain-read-error-detail",
-				&[("error", FluentValue::from(error.to_string()))],
+			ui::warning(format!(
+				"Could not read the Anime365 access token from macOS Keychain: {error}"
 			));
 			None
 		}
@@ -121,14 +119,17 @@ pub(crate) fn store_if_requested(
 	let AccessToken::Browser(token) = access_token else {
 		return Ok(());
 	};
-	if !ui::confirm(&tr("auth-keychain-save-confirm"), true)? {
+	if !ui::confirm("Save this token in macOS Keychain?", true)? {
 		return Ok(());
 	}
 	set_generic_password(KEYCHAIN_ITEM, KEYCHAIN_ACCOUNT, token.as_bytes())
 		.map_err(|error| {
-			Error::with_debug(tr("auth-keychain-save-error"), error)
+			Error::with_debug(
+				"Could not save the Anime365 access token in macOS Keychain.",
+				error,
+			)
 		})?;
-	ui::success(tr("auth-keychain-save-success"));
+	ui::success("Saved access token in macOS Keychain.");
 	Ok(())
 }
 
@@ -144,9 +145,10 @@ pub(crate) fn remove_stored_token() -> Result<(), Error> {
 	match delete_generic_password(KEYCHAIN_ITEM, KEYCHAIN_ACCOUNT) {
 		Ok(()) => Ok(()),
 		Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
-		Err(error) => {
-			Err(Error::with_debug(tr("auth-keychain-remove-error"), error))
-		}
+		Err(error) => Err(Error::with_debug(
+			"Could not remove the Anime365 access token from macOS Keychain.",
+			error,
+		)),
 	}
 }
 

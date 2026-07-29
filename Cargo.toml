@@ -10,11 +10,10 @@ license = "Apache-2.0"
 [workspace.dependencies]
 # external dependencies
 base64 = "0.22"
-clap = { version = "4", features = ["derive", "string"] }
+clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 console = "0.16"
 directories = "6"
-fluent-bundle = "0.16"
 indicatif = "0.18"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 pulldown-cmark = { version = "0.13", default-features = false }
@@ -24,14 +23,11 @@ security-framework = "3"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sys-locale = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
-unic-langid = "0.9"
 unicode-normalization = "0.1"
 
 # test dependencies
 divan = "0.1"
-fluent-syntax = "0.12"
 pretty_assertions = "1"
 
 [profile.dev]
