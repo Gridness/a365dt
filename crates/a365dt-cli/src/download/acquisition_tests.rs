@@ -1,0 +1,87 @@
+use pretty_assertions::assert_eq;
+
+use super::{
+	ResumeState, finalize, first_nonzero, part_path, protect_mismatch,
+	resume_start, retryable, valid_content_range, verified_size,
+};
+
+#[test]
+fn validates_resumed_content_range() {
+	assert_eq!(valid_content_range("bytes 50-99/100", 50, 100), true);
+	assert_eq!(valid_content_range("bytes 0-99/100", 50, 100), false);
+	assert_eq!(valid_content_range("bytes 50-99/101", 50, 100), false);
+}
+
+#[test]
+fn resumes_only_when_the_partial_file_belongs_to_the_current_asset() {
+	let old = ResumeState {
+		total: 100,
+		validator: "old".into(),
+	};
+	let current = ResumeState {
+		total: 100,
+		validator: "current".into(),
+	};
+
+	assert_eq!(
+		[
+			resume_start(50, Some(100), Some(&current), Some(&current)),
+			resume_start(50, Some(100), Some(&old), Some(&current)),
+			resume_start(50, Some(100), None, Some(&current)),
+			resume_start(101, Some(100), Some(&current), Some(&current)),
+		],
+		[50, 0, 0, 0]
+	);
+}
+
+#[test]
+fn accepts_transfer_without_declared_size() {
+	assert_eq!(verified_size(None, 42).unwrap(), 42);
+}
+
+#[test]
+fn preserves_known_size_when_retry_reports_zero() {
+	assert_eq!(
+		[
+			first_nonzero(Some(200), Some(100)),
+			first_nonzero(Some(0), Some(100)),
+			first_nonzero(None, Some(100)),
+			first_nonzero(Some(0), None),
+			first_nonzero(None, None),
+		],
+		[Some(200), Some(100), Some(100), None, None]
+	);
+}
+
+#[test]
+fn rejects_empty_transfer_with_relevant_error() {
+	assert_eq!(
+		verified_size(Some(0), 0).unwrap_err(),
+		retryable("The media server returned an empty file.", None)
+	);
+}
+
+#[tokio::test]
+async fn replaces_mismatched_file_and_cleans_backup() {
+	let unique = format!(
+		"a365dt-test-{}-{}",
+		std::process::id(),
+		std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_nanos()
+	);
+	let directory = std::env::temp_dir().join(unique);
+	tokio::fs::create_dir(&directory).await.unwrap();
+	let final_path = directory.join("episode.mp4");
+	tokio::fs::write(&final_path, b"bad").await.unwrap();
+
+	protect_mismatch(&final_path, 4).await.unwrap();
+	let part = part_path(&final_path);
+	tokio::fs::write(&part, b"good").await.unwrap();
+	finalize(&part, &final_path).await.unwrap();
+
+	assert_eq!(tokio::fs::read(&final_path).await.unwrap(), b"good");
+	assert_eq!(directory.join("episode.mp4.corrupt").exists(), false);
+	tokio::fs::remove_dir_all(directory).await.unwrap();
+}
