@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{
-	api::{Embed, Episode, MediaOption, Series, Translation},
+	api::{Embed, Episode, MediaOption, Translation},
 	error::Error,
 	ui,
 };
@@ -40,33 +40,6 @@ pub struct PlannedRelease {
 	pub height: u16,
 	pub media_url: String,
 	pub subtitle_url: Option<String>,
-}
-
-pub fn choose_series(series: &[Series]) -> Result<Series, Error> {
-	if series.is_empty() {
-		return Err("No matching Anime365 series found.".into());
-	}
-	let rows = series_rows(series);
-	Ok(series[ui::choose("Search results", &rows)?].clone())
-}
-
-pub(crate) fn series_rows(series: &[Series]) -> Vec<[String; 4]> {
-	series
-		.iter()
-		.map(|item| {
-			[
-				item.title.clone(),
-				item.year
-					.map_or_else(|| "?".into(), |year| year.to_string()),
-				item.type_title.as_deref().unwrap_or("Unknown type").into(),
-				format!(
-					"{} episodes",
-					item.number_of_episodes
-						.map_or_else(|| "?".into(), |count| count.to_string())
-				),
-			]
-		})
-		.collect()
 }
 
 pub fn choose_episodes(episodes: &[Episode]) -> Result<Vec<Episode>, Error> {

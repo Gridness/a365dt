@@ -1,7 +1,4 @@
-use std::{
-	collections::HashSet,
-	io::{self, IsTerminal},
-};
+use std::io::{self, IsTerminal};
 
 use console::{
 	Key, Term, measure_text_width, strip_ansi_codes, style, truncate_str,
@@ -105,10 +102,9 @@ pub(crate) enum Action {
 
 #[derive(Debug)]
 pub(crate) struct State {
-	search: Search,
+	search: Option<Search>,
 	input: String,
 	cursor: usize,
-	preferred: Vec<usize>,
 	matches: Vec<usize>,
 	selected: usize,
 	offset: usize,
@@ -123,10 +119,9 @@ impl State {
 	fn with_telemetry(search: Search, telemetry: Recorder) -> Self {
 		let matches = search.ranked("");
 		Self {
-			search,
+			search: Some(search),
 			input: String::new(),
 			cursor: 0,
-			preferred: Vec::new(),
 			matches,
 			selected: 0,
 			offset: 0,
@@ -134,31 +129,28 @@ impl State {
 		}
 	}
 
-	pub(crate) fn from_rows<const N: usize>(
-		rows: &[[String; N]],
-		input: String,
-		telemetry: Recorder,
-	) -> Self {
-		let measurement =
-			telemetry.measure_items(Operation::SearchIndex, rows.len());
-		let search = Search::new(rows);
-		drop(measurement);
-		let mut state = Self::with_telemetry(search, telemetry);
-		state.cursor = input.len();
-		state.input = input;
-		state.refresh();
-		state
+	pub(crate) fn from_matches(input: String, matches: Vec<usize>) -> Self {
+		Self {
+			search: None,
+			cursor: input.len(),
+			input,
+			matches,
+			selected: 0,
+			offset: 0,
+			telemetry: Recorder::default(),
+		}
 	}
 
-	pub(crate) fn replace<const N: usize>(&mut self, rows: &[[String; N]]) {
+	pub(crate) fn set_matches(&mut self, matches: Vec<usize>) {
+		self.matches = matches;
+		self.selected = 0;
+		self.offset = 0;
+	}
+
+	pub(crate) fn replace_matches(&mut self, matches: Vec<usize>) {
 		let selected = self.matches.get(self.selected).copied();
 		let screen_row = self.selected.saturating_sub(self.offset);
-		let measurement = self
-			.telemetry
-			.measure_items(Operation::SearchIndex, rows.len());
-		self.search = Search::new(rows);
-		drop(measurement);
-		self.matches = self.ranked();
+		self.matches = matches;
 		if let Some(selected) = selected
 			&& let Some(position) =
 				self.matches.iter().position(|index| *index == selected)
@@ -177,21 +169,6 @@ impl State {
 
 	pub(crate) fn has_matches(&self) -> bool {
 		!self.matches.is_empty()
-	}
-
-	pub(crate) fn prefer(&mut self, rows: Vec<usize>) {
-		let selected = self.selected_row();
-		let screen_row = self.selected.saturating_sub(self.offset);
-		self.preferred = rows;
-		self.matches = self.ranked();
-		if let Some(position) = selected.and_then(|selected| {
-			self.matches.iter().position(|index| *index == selected)
-		}) {
-			self.selected = position;
-			self.offset = position.saturating_sub(screen_row);
-		} else {
-			self.select_first();
-		}
 	}
 
 	pub(crate) fn selected_row(&self) -> Option<usize> {
@@ -345,18 +322,14 @@ impl State {
 	}
 
 	fn ranked(&self) -> Vec<usize> {
+		let Some(search) = &self.search else {
+			return self.matches.clone();
+		};
 		let _measurement = self
 			.telemetry
-			.measure_items(Operation::SearchRank, self.search.len());
+			.measure_items(Operation::SearchRank, search.len());
 		let query = query_and_choice(&self.input).0;
-		let mut seen = HashSet::new();
-		self.preferred
-			.iter()
-			.copied()
-			.filter(|index| *index < self.search.len())
-			.chain(self.search.ranked(query))
-			.filter(|index| seen.insert(*index))
-			.collect()
+		search.ranked(query)
 	}
 
 	fn ensure_visible(&mut self, visible: usize) {
