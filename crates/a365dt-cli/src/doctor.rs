@@ -4,7 +4,6 @@ use indicatif::{HumanBytes, HumanDuration};
 
 use crate::{
 	error::Error,
-	l10n::{tr, tr_args},
 	series_cache,
 	telemetry::{self, PerformanceMetric, Snapshot},
 };
@@ -25,24 +24,24 @@ pub async fn run(debug: bool) -> ExitCode {
 	let telemetry = telemetry::snapshot();
 	let mut sections = vec![
 		Section {
-			title: tr("doctor-section-health"),
+			title: "Health",
 			debug: false,
 			checks: health_checks(&server, &cache, &telemetry, debug),
 		},
 		Section {
-			title: tr("doctor-section-statistics"),
+			title: "Statistics",
 			debug: false,
 			checks: statistic_checks(&cache, &telemetry),
 		},
 		Section {
-			title: tr("doctor-section-build"),
+			title: "Build",
 			debug: false,
 			checks: build_checks(),
 		},
 	];
 	if debug {
 		sections.push(Section {
-			title: tr("doctor-section-debug"),
+			title: "Debug diagnostics",
 			debug: true,
 			checks: debug_checks(&server, &cache, &telemetry),
 		});
@@ -60,58 +59,42 @@ fn health_checks(
 ) -> Vec<Check> {
 	let server = match server.status {
 		Status::Error => Check::new("Anime365", &server.summary, server.status)
-			.remedy(tr("doctor-remedy-server-error")),
+			.remedy("Check the network or Anime365 status, then retry"),
 		Status::Warning => {
 			Check::new("Anime365", &server.summary, server.status)
-				.remedy(tr("doctor-remedy-server-slow"))
+				.remedy("Retry; check the network if latency remains elevated")
 		}
 		Status::Healthy | Status::Info => {
 			Check::new("Anime365", &server.summary, server.status)
 		}
 	};
 	let cache = match cache {
-		CacheInspection::Ready { cache, .. } if cache.is_fresh() => Check::new(
-			tr("doctor-series-cache"),
-			tr("doctor-fresh"),
-			Status::Healthy,
-		),
-		CacheInspection::Ready { .. } => Check::new(
-			tr("doctor-series-cache"),
-			tr("doctor-stale"),
-			Status::Warning,
-		)
-		.remedy(tr("doctor-remedy-refresh-cache")),
-		CacheInspection::Missing(_) => Check::new(
-			tr("doctor-series-cache"),
-			tr("doctor-not-created"),
-			Status::Info,
-		)
-		.remedy(tr("doctor-remedy-create-cache")),
-		CacheInspection::Broken { .. } => Check::new(
-			tr("doctor-series-cache"),
-			tr("doctor-unreadable"),
-			Status::Error,
-		)
-		.remedy(tr("doctor-remedy-reset-cache")),
+		CacheInspection::Ready { cache, .. } if cache.is_fresh() => {
+			Check::new("Series cache", "Fresh", Status::Healthy)
+		}
+		CacheInspection::Ready { .. } => {
+			Check::new("Series cache", "Stale", Status::Warning)
+				.remedy("Run a title search to refresh it")
+		}
+		CacheInspection::Missing(_) => {
+			Check::new("Series cache", "Not created yet", Status::Info)
+				.remedy("Run a title search to create it")
+		}
+		CacheInspection::Broken { .. } => {
+			Check::new("Series cache", "Unreadable", Status::Error)
+				.remedy("Run `a365dt cache prune` to reset it")
+		}
 	};
 	let telemetry = match snapshot {
-		Ok(snapshot) if snapshot.enabled => Check::new(
-			tr("telemetry-heading"),
-			tr("telemetry-state-enabled"),
-			Status::Healthy,
-		),
-		Ok(_) => Check::new(
-			tr("telemetry-heading"),
-			tr("telemetry-state-disabled"),
-			Status::Warning,
-		)
-		.remedy(tr("doctor-remedy-enable-telemetry")),
-		Err(error) => Check::new(
-			tr("telemetry-heading"),
-			error.render(debug),
-			Status::Error,
-		)
-		.remedy(tr("doctor-remedy-reset-telemetry")),
+		Ok(snapshot) if snapshot.enabled => {
+			Check::new("Local telemetry", "Enabled", Status::Healthy)
+		}
+		Ok(_) => Check::new("Local telemetry", "Disabled", Status::Warning)
+			.remedy("Run `a365dt telemetry enable` to resume observations"),
+		Err(error) => {
+			Check::new("Local telemetry", error.render(debug), Status::Error)
+				.remedy("Run `a365dt telemetry clear` to reset it")
+		}
 	};
 	vec![server, cache, telemetry]
 }
@@ -122,84 +105,72 @@ fn statistic_checks(
 ) -> Vec<Check> {
 	let mut checks = cache_statistics(cache);
 	let Ok(snapshot) = snapshot else {
-		for id in [
-			"doctor-catalogue-hit-rate",
-			"doctor-api-requests",
-			"doctor-media-requests",
-			"doctor-cache-retrieval",
-			"doctor-search",
-			"doctor-search-throughput",
-			"doctor-downloads",
-			"doctor-download-volume",
-			"doctor-command-usage",
+		for label in [
+			"Catalogue hit rate",
+			"API requests",
+			"Media requests",
+			"Cache retrieval",
+			"Search",
+			"Search throughput",
+			"Downloads",
+			"Download volume",
+			"Command usage",
 		] {
 			checks.push(
-				Check::new(tr(id), tr("unavailable"), Status::Info)
-					.remedy(tr("doctor-remedy-reset-observations")),
+				Check::new(label, "Unavailable", Status::Info).remedy(
+					"Reset local telemetry and collect new observations",
+				),
 			);
 		}
 		return checks;
 	};
 	let suffix = if snapshot.enabled {
-		String::new()
+		""
 	} else {
-		tr("doctor-historical")
+		" (historical)"
 	};
 	let hits = counter(snapshot, "catalogue.hits");
 	let misses = counter(snapshot, "catalogue.misses");
-	checks.push(rate_check(
-		&tr("doctor-catalogue-hit-rate"),
-		hits,
-		misses,
-		&suffix,
-	));
+	checks.push(rate_check("Catalogue hit rate", hits, misses, suffix));
 	checks.push(performance_check(
-		&tr("doctor-api-requests"),
+		"API requests",
 		aggregate(&snapshot.performance, "request.api."),
-		&suffix,
+		suffix,
 	));
 	checks.push(performance_check(
-		&tr("doctor-media-requests"),
+		"Media requests",
 		aggregate(&snapshot.performance, "request.asset."),
-		&suffix,
+		suffix,
 	));
 	checks.push(performance_check(
-		&tr("doctor-cache-retrieval"),
+		"Cache retrieval",
 		aggregate(&snapshot.performance, "cache.retrieve"),
-		&suffix,
+		suffix,
 	));
 	checks.push(performance_check(
-		&tr("doctor-search"),
+		"Search",
 		aggregate(&snapshot.performance, "search."),
-		&suffix,
+		suffix,
 	));
 	let rank = aggregate(&snapshot.performance, "search.rank");
 	checks.push(match rank {
 		Some(metric) => Check::new(
-			tr("doctor-search-throughput"),
-			tr_args(
-				"doctor-search-rate",
-				&[
-					(
-						"rate",
-						format!(
-							"{:.0}",
-							metric.work_units as f64 * 1_000_000.0
-								/ metric.total_us.max(1) as f64
-						)
-						.into(),
-					),
-					("suffix", suffix.clone().into()),
-				],
-			),
+			"Search throughput",
+			{
+				format!(
+					"{:.0} Series/s{suffix}",
+					metric.work_units as f64 * 1_000_000.0
+						/ metric.total_us.max(1) as f64
+				)
+			},
 			Status::Info,
 		),
 		None => Check::new(
-			tr("doctor-search-throughput"),
-			tr("unavailable-no-observations"),
+			"Search throughput",
+			"Unavailable (no observations)",
 			Status::Info,
 		)
-		.remedy(tr("doctor-remedy-run-searches")),
+		.remedy("Run searches with telemetry enabled"),
 	});
 	let downloaded = counter(snapshot, "downloads.episodes.downloaded");
 	let skipped = counter(snapshot, "downloads.episodes.skipped");
@@ -207,32 +178,27 @@ fn statistic_checks(
 		.saturating_add(counter(snapshot, "downloads.episodes.mux_failed"))
 		.saturating_add(counter(snapshot, "downloads.episodes.interrupted"));
 	checks.push(rate_check(
-		&tr("doctor-downloads"),
+		"Downloads",
 		downloaded.saturating_add(skipped),
 		failed,
-		&suffix,
+		suffix,
 	));
 	let batches = counter(snapshot, "downloads.batches");
 	let bytes = counter(snapshot, "downloads.bytes");
 	let episodes = downloaded.saturating_add(skipped).saturating_add(failed);
 	checks.push(if batches == 0 {
 		Check::new(
-			tr("doctor-download-volume"),
-			tr("unavailable-no-observations"),
+			"Download volume",
+			"Unavailable (no observations)",
 			Status::Info,
 		)
-		.remedy(tr("doctor-remedy-run-downloads"))
+		.remedy("Run downloads with telemetry enabled")
 	} else {
 		Check::new(
-			tr("doctor-download-volume"),
-			tr_args(
-				"doctor-download-volume-value",
-				&[
-					("batches", batches.into()),
-					("episodes", episodes.into()),
-					("bytes", HumanBytes(bytes).to_string().into()),
-					("suffix", suffix.clone().into()),
-				],
+			"Download volume",
+			format!(
+				"{batches} batches · {episodes} Episodes · {}{suffix}",
+				HumanBytes(bytes)
 			),
 			Status::Info,
 		)
@@ -244,11 +210,8 @@ fn statistic_checks(
 		.map(|(_, count)| count)
 		.sum::<u64>();
 	checks.push(Check::new(
-		tr("doctor-command-usage"),
-		tr_args(
-			"doctor-command-count",
-			&[("commands", commands.into()), ("suffix", suffix.into())],
-		),
+		"Command usage",
+		format!("{commands} commands{suffix}"),
 		Status::Info,
 	));
 	checks
@@ -258,70 +221,42 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 	match cache {
 		CacheInspection::Ready { cache, bytes, .. } => vec![
 			Check::new(
-				tr("doctor-last-cache-update"),
+				"Last cache update",
 				telemetry::format_timestamp(Some(cache.refreshed_at)),
 				Status::Info,
 			),
 			Check::new(
-				tr("doctor-cached-series"),
+				"Cached Series",
 				format!("{} · {}", cache.series.len(), HumanBytes(*bytes)),
 				Status::Info,
 			),
 		],
 		CacheInspection::Missing(_) => vec![
-			Check::new(
-				tr("doctor-last-cache-update"),
-				tr("never"),
-				Status::Info,
-			)
-			.remedy(tr("doctor-remedy-create-cache")),
-			Check::new(
-				tr("doctor-cached-series"),
-				tr("unavailable"),
-				Status::Info,
-			)
-			.remedy(tr("doctor-remedy-create-cache")),
+			Check::new("Last cache update", "Never", Status::Info)
+				.remedy("Run a title search to create the cache"),
+			Check::new("Cached Series", "Unavailable", Status::Info)
+				.remedy("Run a title search to create the cache"),
 		],
 		CacheInspection::Broken { .. } => vec![
-			Check::new(
-				tr("doctor-last-cache-update"),
-				tr("unavailable"),
-				Status::Info,
-			)
-			.remedy(tr("doctor-remedy-cache-prune")),
-			Check::new(
-				tr("doctor-cached-series"),
-				tr("unavailable"),
-				Status::Info,
-			)
-			.remedy(tr("doctor-remedy-cache-prune")),
+			Check::new("Last cache update", "Unavailable", Status::Info)
+				.remedy("Run `a365dt cache prune`"),
+			Check::new("Cached Series", "Unavailable", Status::Info)
+				.remedy("Run `a365dt cache prune`"),
 		],
 	}
 }
 
 fn build_checks() -> Vec<Check> {
 	vec![
+		Check::new("Version", env!("CARGO_PKG_VERSION"), Status::Info),
+		Check::new("Commit", env!("A365DT_COMMIT_SHA"), Status::Info),
+		Check::new("Profile", env!("A365DT_BUILD_PROFILE"), Status::Info),
 		Check::new(
-			tr("doctor-version"),
-			env!("CARGO_PKG_VERSION"),
-			Status::Info,
-		),
-		Check::new(
-			tr("doctor-commit"),
-			env!("A365DT_COMMIT_SHA"),
-			Status::Info,
-		),
-		Check::new(
-			tr("doctor-profile"),
-			env!("A365DT_BUILD_PROFILE"),
-			Status::Info,
-		),
-		Check::new(
-			tr("doctor-platform"),
+			"Platform",
 			format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
 			Status::Info,
 		),
-		Check::new(tr("doctor-compiler"), env!("A365DT_RUSTC"), Status::Info),
+		Check::new("Compiler", env!("A365DT_RUSTC"), Status::Info),
 	]
 }
 
@@ -330,120 +265,94 @@ fn debug_checks(
 	cache: &CacheInspection,
 	snapshot: &Result<Snapshot, Error>,
 ) -> Vec<Check> {
-	let response_status = server.http_status.map_or_else(
-		|| tr("doctor-no-http-response"),
-		|status| status.to_string(),
-	);
-	let response_latency = milliseconds(server.latency.as_micros() as u64);
 	let mut checks = vec![
-		Check::new(tr("doctor-server-endpoint"), server::URL, Status::Info),
+		Check::new("Server endpoint", server::URL, Status::Info),
 		Check::new(
-			tr("doctor-server-response"),
-			tr_args(
-				"doctor-server-response-value",
-				&[
-					("status", response_status.into()),
-					("latency", response_latency.into()),
-				],
+			"Server response",
+			format!(
+				"{} · {}",
+				server.http_status.map_or_else(
+					|| "No HTTP response".into(),
+					|status| status.to_string()
+				),
+				milliseconds(server.latency.as_micros() as u64)
 			),
 			Status::Info,
 		),
 		Check::new(
-			tr("doctor-latency-threshold"),
+			"Latency warning threshold",
 			HumanDuration(server::LATENCY_WARNING).to_string(),
 			Status::Info,
 		),
 	];
 	if let Some(detail) = &server.detail {
-		checks.push(Check::new(
-			tr("doctor-server-detail"),
-			detail,
-			Status::Info,
-		));
+		checks.push(Check::new("Server detail", detail, Status::Info));
 	}
 	let (cache_path, cache_detail) = match cache {
 		CacheInspection::Ready { path, cache, .. } => (
 			path,
-			tr_args(
-				"doctor-cache-age",
-				&[
-					(
-						"age",
-						HumanDuration(cache::age(cache)).to_string().into(),
-					),
-					(
-						"ttl",
-						HumanDuration(series_cache::MAX_AGE).to_string().into(),
-					),
-				],
+			format!(
+				"{} old · TTL {}",
+				HumanDuration(cache::age(cache)),
+				HumanDuration(series_cache::MAX_AGE)
 			),
 		),
-		CacheInspection::Missing(path) => (path, tr("doctor-missing")),
+		CacheInspection::Missing(path) => (path, "Missing".into()),
 		CacheInspection::Broken { path, detail } => (path, detail.clone()),
 	};
 	checks.push(Check::new(
-		tr("doctor-cache-path"),
+		"Cache path",
 		cache_path.display().to_string(),
 		Status::Info,
 	));
-	checks.push(Check::new(
-		tr("doctor-cache-detail"),
-		cache_detail,
-		Status::Info,
-	));
+	checks.push(Check::new("Cache detail", cache_detail, Status::Info));
 	match snapshot {
 		Ok(snapshot) => {
-			let data_size = snapshot.data_bytes.map_or_else(
-				|| tr("doctor-missing-lowercase"),
-				|bytes| HumanBytes(bytes).to_string(),
-			);
 			checks.extend([
 				Check::new(
-					tr("telemetry-data"),
-					tr_args(
-						"doctor-telemetry-data-value",
-						&[
-							(
-								"path",
-								snapshot.data_path.display().to_string().into(),
-							),
-							("size", data_size.into()),
-						],
+					"Telemetry data",
+					format!(
+						"{} · {}",
+						snapshot.data_path.display(),
+						snapshot.data_bytes.map_or_else(
+							|| "missing".into(),
+							|bytes| HumanBytes(bytes).to_string()
+						)
 					),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-opt-out"),
+					"Telemetry opt-out",
 					snapshot.disabled_path.display().to_string(),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-schema"),
+					"Telemetry schema",
 					snapshot.schema_version.to_string(),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-first-observation"),
+					"First observation",
 					telemetry::format_timestamp(snapshot.first_recorded_at),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-last-observation"),
+					"Last observation",
 					telemetry::format_timestamp(snapshot.last_recorded_at),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-last-enabled"),
+					"Last enabled",
 					telemetry::format_timestamp(snapshot.last_enabled_at),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-last-disabled"),
+					"Last disabled",
 					telemetry::format_timestamp(snapshot.last_disabled_at),
 					Status::Info,
 				),
 				Check::new(
-					tr("telemetry-last-cleared"),
+					"Last cleared",
 					telemetry::format_timestamp(snapshot.last_cleared_at),
 					Status::Info,
 				),
@@ -451,19 +360,18 @@ fn debug_checks(
 			if snapshot.performance.is_empty() {
 				checks.push(
 					Check::new(
-						tr("doctor-operation-latency"),
-						tr("unavailable"),
+						"Per-operation latency",
+						"Unavailable",
 						Status::Info,
 					)
-					.remedy(tr("doctor-remedy-collect-telemetry")),
+					.remedy(
+						"Collect telemetry by running searches or downloads",
+					),
 				);
 			} else {
 				checks.extend(snapshot.performance.iter().map(|metric| {
 					Check::new(
-						tr_args(
-							"doctor-latency-operation",
-							&[("operation", metric.operation.clone().into())],
-						),
+						format!("Latency · {}", metric.operation),
 						performance_detail(metric),
 						Status::Info,
 					)
@@ -471,21 +379,14 @@ fn debug_checks(
 			}
 			if snapshot.counters.is_empty() {
 				checks.push(
-					Check::new(
-						tr("doctor-usage-counters"),
-						tr("unavailable"),
-						Status::Info,
-					)
-					.remedy(tr("doctor-remedy-run-commands")),
+					Check::new("Usage counters", "Unavailable", Status::Info)
+						.remedy("Run commands with telemetry enabled"),
 				);
 			} else {
 				checks.extend(snapshot.counters.iter().map(
 					|(counter, value)| {
 						Check::new(
-							tr_args(
-								"doctor-counter",
-								&[("counter", counter.clone().into())],
-							),
+							format!("Counter · {counter}"),
 							value.to_string(),
 							Status::Info,
 						)
@@ -494,21 +395,17 @@ fn debug_checks(
 			}
 		}
 		Err(error) => checks.push(Check::new(
-			tr("doctor-telemetry-detail"),
+			"Telemetry detail",
 			error.render(true),
 			Status::Error,
 		)),
 	}
 	let overhead = telemetry::benchmark_overhead();
 	checks.push(Check::new(
-		tr("doctor-telemetry-overhead"),
-		tr_args(
-			"doctor-telemetry-overhead-value",
-			&[
-				("enabled", overhead.enabled_ns.into()),
-				("disabled", overhead.disabled_ns.into()),
-				("added", overhead.added_ns.into()),
-			],
+		"Telemetry overhead",
+		format!(
+			"enabled {} ns · disabled {} ns · added {} ns",
+			overhead.enabled_ns, overhead.disabled_ns, overhead.added_ns
 		),
 		if overhead.added_ns <= 10_000 {
 			Status::Healthy
@@ -527,23 +424,19 @@ fn performance_check(
 	match metric {
 		Some(metric) => Check::new(
 			label,
-			tr_args(
-				"doctor-performance-value",
-				&[
-					(
-						"average",
-						milliseconds(metric.total_us / metric.count).into(),
-					),
-					("median", milliseconds(metric.median_us).into()),
-					("count", metric.count.into()),
-					("suffix", suffix.into()),
-				],
-			),
+			{
+				format!(
+					"average {} · median {} · {} observations{suffix}",
+					milliseconds(metric.total_us / metric.count),
+					milliseconds(metric.median_us),
+					metric.count
+				)
+			},
 			Status::Info,
 		),
 		None => {
-			Check::new(label, tr("unavailable-no-observations"), Status::Info)
-				.remedy(tr("doctor-remedy-run-activity"))
+			Check::new(label, "Unavailable (no observations)", Status::Info)
+				.remedy("Run searches or downloads with telemetry enabled")
 		}
 	}
 }
@@ -554,41 +447,30 @@ fn performance_detail(metric: &PerformanceMetric) -> String {
 		.get(metric.samples_us.len() / 2)
 		.copied()
 		.unwrap_or_default();
-	tr_args(
-		"doctor-performance-detail",
-		&[
-			(
-				"average",
-				milliseconds(metric.total_us / metric.count.max(1)).into(),
-			),
-			("median", milliseconds(median).into()),
-			("total", milliseconds(metric.total_us).into()),
-			("samples", metric.samples_us.len().into()),
-			("work_units", metric.work_units.into()),
-		],
+	format!(
+		"average {} · median {} · total {} · {} samples · {} work units",
+		milliseconds(metric.total_us / metric.count.max(1)),
+		milliseconds(median),
+		milliseconds(metric.total_us),
+		metric.samples_us.len(),
+		metric.work_units
 	)
 }
 
 fn rate_check(label: &str, success: u64, failure: u64, suffix: &str) -> Check {
 	let total = success.saturating_add(failure);
 	if total == 0 {
-		Check::new(label, tr("unavailable-no-observations"), Status::Info)
-			.remedy(tr("doctor-remedy-run-activity"))
+		Check::new(label, "Unavailable (no observations)", Status::Info)
+			.remedy("Run searches or downloads with telemetry enabled")
 	} else {
 		Check::new(
 			label,
-			tr_args(
-				"doctor-rate-value",
-				&[
-					(
-						"percent",
-						format!("{:.1}", success as f64 / total as f64 * 100.0)
-							.into(),
-					),
-					("total", total.into()),
-					("suffix", suffix.into()),
-				],
-			),
+			{
+				format!(
+					"{:.1}% · {total} observations{suffix}",
+					success as f64 / total as f64 * 100.0
+				)
+			},
 			Status::Info,
 		)
 	}

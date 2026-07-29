@@ -4,10 +4,7 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{
-	l10n::tr,
-	series_cache::{self, Cache},
-};
+use crate::series_cache::{self, Cache};
 
 pub(super) enum Inspection {
 	Ready {
@@ -26,7 +23,7 @@ pub(super) fn inspect() -> Inspection {
 	let Some(path) = series_cache::cache_path() else {
 		return Inspection::Broken {
 			path: PathBuf::from("<unresolved>"),
-			detail: tr("doctor-cache-directory-error"),
+			detail: "Could not resolve the OS cache directory.".into(),
 		};
 	};
 	let contents = match fs::read(&path) {

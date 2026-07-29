@@ -45,7 +45,7 @@ fn aggregates_matching_operation_totals_and_recent_samples() {
 fn reports_the_worst_health_status() {
 	let report = Report {
 		sections: vec![Section {
-			title: "Health".into(),
+			title: "Health",
 			debug: false,
 			checks: vec![
 				Check::new("API", "Available", Status::Healthy),

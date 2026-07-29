@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 use reqwest::StatusCode;
 
 use super::{milliseconds, report::Status};
-use crate::l10n::{tr, tr_args};
 
 pub(super) const URL: &str =
 	"https://anime365.ru/api/series/?limit=1&fields=id";
@@ -31,7 +30,7 @@ pub(super) async fn probe() -> Probe {
 		Err(error) => {
 			return Probe {
 				status: Status::Error,
-				summary: tr("unavailable"),
+				summary: "Unavailable".into(),
 				http_status: None,
 				latency: started.elapsed(),
 				detail: Some(error.to_string()),
@@ -46,10 +45,7 @@ pub(super) async fn probe() -> Probe {
 			if !http_status.is_success() {
 				Probe {
 					status: Status::Error,
-					summary: tr_args(
-						"doctor-server-http-unavailable",
-						&[("status", http_status.as_u16().into())],
-					),
+					summary: format!("Unavailable (HTTP {http_status})"),
 					http_status: Some(http_status),
 					latency,
 					detail: None,
@@ -57,7 +53,7 @@ pub(super) async fn probe() -> Probe {
 			} else if let Err(error) = body {
 				Probe {
 					status: Status::Error,
-					summary: tr("doctor-server-read-error"),
+					summary: "Response could not be read".into(),
 					http_status: Some(http_status),
 					latency,
 					detail: Some(error.to_string()),
@@ -70,16 +66,14 @@ pub(super) async fn probe() -> Probe {
 				};
 				Probe {
 					status,
-					summary: tr_args(
+					summary: format!(
+						"Available · {}{}",
+						milliseconds(latency.as_micros() as u64),
 						if status == Status::Warning {
-							"doctor-server-available-slow"
+							" · elevated latency"
 						} else {
-							"doctor-server-available"
-						},
-						&[(
-							"latency",
-							milliseconds(latency.as_micros() as u64).into(),
-						)],
+							""
+						}
 					),
 					http_status: Some(http_status),
 					latency,
@@ -90,9 +84,9 @@ pub(super) async fn probe() -> Probe {
 		Err(error) => Probe {
 			status: Status::Error,
 			summary: if error.is_timeout() {
-				tr("doctor-server-timeout")
+				"Unavailable · timed out".into()
 			} else {
-				tr("doctor-server-request-error")
+				"Unavailable · request failed".into()
 			},
 			http_status: None,
 			latency: started.elapsed(),

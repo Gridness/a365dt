@@ -1,12 +1,10 @@
 use std::time::Duration;
 
-use fluent_bundle::FluentValue;
 use reqwest::{Client, Method, RequestBuilder, Response, Url, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
 	error::Error,
-	l10n::{tr, tr_args},
 	telemetry::{Operation, Recorder},
 };
 
@@ -93,7 +91,10 @@ impl Anime365 {
 			.user_agent(concat!("a365dt/", env!("CARGO_PKG_VERSION")))
 			.build()
 			.map_err(|error| {
-				request_error(tr("api-client-init-error"), error)
+				request_error(
+					"Could not initialize the secure HTTP client.",
+					error,
+				)
 			})?;
 		Ok(Self {
 			http,
@@ -180,7 +181,7 @@ impl Anime365 {
 				return Ok(translations);
 			}
 			if translations.len() >= 100_000 {
-				return Err(Error::new(tr("api-too-many-translations")));
+				return Err("Anime365 returned too many translations.".into());
 			}
 		}
 	}
@@ -242,7 +243,9 @@ impl Anime365 {
 	) -> Result<T> {
 		self.get_optional(path, query, authenticated, operation)
 			.await?
-			.ok_or_else(|| Error::new(tr("api-missing-data")))
+			.ok_or_else(|| {
+				Error::new("Anime365 did not return the requested API data.")
+			})
 	}
 
 	async fn get_optional<T: DeserializeOwned>(
@@ -261,33 +264,30 @@ impl Anime365 {
 			request = request.query(&[("access_token", &self.token)]);
 		}
 		let _measurement = self.telemetry.measure(operation);
-		let response = request
-			.send()
-			.await
-			.map_err(|error| request_error(tr("api-request-error"), error))?;
+		let response = request.send().await.map_err(|error| {
+			request_error("The request to the Anime365 API failed.", error)
+		})?;
 		let status = response.status();
-		let body: Envelope<T> = response
-			.json()
-			.await
-			.map_err(|error| request_error(tr("api-response-error"), error))?;
+		let body: Envelope<T> = response.json().await.map_err(|error| {
+			request_error(
+				"Anime365 returned a response a365dt could not read.",
+				error,
+			)
+		})?;
 		if status == reqwest::StatusCode::NOT_FOUND
 			|| body.error.as_ref().is_some_and(|error| error.code == 404)
 		{
 			return Ok(None);
 		}
 		if let Some(error) = body.error {
-			return Err(Error::new(tr_args(
-				"api-service-error",
-				&[
-					("code", FluentValue::from(i64::from(error.code))),
-					("message", FluentValue::from(error.message)),
-				],
+			return Err(Error::new(format!(
+				"Anime365 error {}: {}",
+				error.code, error.message
 			)));
 		}
 		if !status.is_success() {
-			return Err(Error::new(tr_args(
-				"api-status-error",
-				&[("status", FluentValue::from(status.to_string()))],
+			return Err(Error::new(format!(
+				"Anime365 rejected the API request (HTTP {status})."
 			)));
 		}
 		Ok(body.data)
@@ -311,13 +311,13 @@ fn normalize_url(input: &str) -> Result<Url> {
 	let mut url = Url::parse(input)
 		.or_else(|_| Url::parse(ASSET_ORIGIN).and_then(|base| base.join(input)))
 		.map_err(|error| {
-			Error::with_debug(tr("api-invalid-media-url"), error)
+			Error::with_debug("Anime365 returned an invalid media URL.", error)
 		})?;
 	if matches!(url.host_str(), Some("anime365.ru" | "www.anime365.ru"))
 		&& url.path().starts_with("/posters/")
 	{
 		url.set_host(Some("smotret-anime.org")).map_err(|error| {
-			Error::with_debug(tr("api-invalid-poster-url"), error)
+			Error::with_debug("Anime365 returned an invalid poster URL.", error)
 		})?;
 	}
 	Ok(url)
@@ -335,15 +335,14 @@ fn is_official(url: &Url) -> bool {
 	)
 }
 
-fn request_error(message: String, error: reqwest::Error) -> Error {
+fn request_error(message: &str, error: reqwest::Error) -> Error {
 	Error::with_debug(message, error.without_url())
 }
 
 async fn send_asset(request: RequestBuilder) -> Result<Response> {
-	request
-		.send()
-		.await
-		.map_err(|error| request_error(tr("api-media-request-error"), error))
+	request.send().await.map_err(|error| {
+		request_error("The request to the Anime365 media server failed.", error)
+	})
 }
 
 #[cfg(test)]
