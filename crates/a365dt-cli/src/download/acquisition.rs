@@ -4,8 +4,7 @@ use std::{
 	time::Duration,
 };
 
-use indicatif::ProgressBar;
-use reqwest::{Method, Response, StatusCode, header};
+use reqwest::{StatusCode, header};
 use tokio::{
 	fs::{self, OpenOptions},
 	io::AsyncWriteExt,
@@ -13,8 +12,44 @@ use tokio::{
 	time::sleep,
 };
 
-use super::RETRIES;
-use crate::{api::Anime365, error::Error};
+mod episode;
+
+use episode::{Adapter, AssetRequest, AssetResponse, RefreshedMedia};
+pub(super) use episode::{EpisodeRequest, Outcome, acquire};
+
+use crate::error::Error;
+
+const RETRIES: usize = 3;
+
+/// Receives semantic acquisition progress while leaving rendering to callers.
+pub(super) trait TransferProgress: Sync {
+	fn total(&self) -> Option<u64>;
+	fn report(&self, event: ProgressEvent<'_>);
+}
+
+pub(super) enum ProgressEvent<'a> {
+	Total(u64),
+	UnknownTotal,
+	Position(u64),
+	ResetEta,
+	Advance(u64),
+	Retry {
+		episode: &'a str,
+		attempt: usize,
+		retries: usize,
+	},
+	RefreshFailed {
+		episode: &'a str,
+		error: &'a Error,
+		debug: bool,
+	},
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum TransferMode {
+	Resumable,
+	Fresh,
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct TransferError {
@@ -30,7 +65,10 @@ struct ResumeState {
 }
 
 impl ResumeState {
-	fn from_response(response: &Response, total: Option<u64>) -> Option<Self> {
+	fn from_response(
+		response: &impl AssetResponse,
+		total: Option<u64>,
+	) -> Option<Self> {
 		let validator = response
 			.headers()
 			.get(header::ETAG)
@@ -62,15 +100,15 @@ impl ResumeState {
 }
 
 pub(super) async fn retry_transfer(
-	api: &Anime365,
+	adapter: &impl Adapter,
 	url: &str,
 	path: &Path,
-	resume: bool,
-	bar: &ProgressBar,
+	mode: TransferMode,
+	progress: &dyn TransferProgress,
 	cancel: &mut watch::Receiver<bool>,
 ) -> Result<(bool, u64), TransferError> {
 	for attempt in 0..=RETRIES {
-		match transfer(api, url, path, resume, bar, cancel).await {
+		match transfer(adapter, url, path, mode, progress, cancel).await {
 			Ok(result) => return Ok(result),
 			Err(error) if error.retry && attempt < RETRIES => {
 				sleep(error.retry_after.unwrap_or_else(|| backoff(attempt, 0)))
@@ -82,34 +120,37 @@ pub(super) async fn retry_transfer(
 	unreachable!()
 }
 
-pub(super) async fn transfer(
-	api: &Anime365,
+async fn transfer(
+	adapter: &impl Adapter,
 	url: &str,
 	final_path: &Path,
-	resume: bool,
-	bar: &ProgressBar,
+	mode: TransferMode,
+	progress: &dyn TransferProgress,
 	cancel: &mut watch::Receiver<bool>,
 ) -> Result<(bool, u64), TransferError> {
 	let part = part_path(final_path);
 	let mut current_state = None;
-	let total = if resume {
-		let head = api.asset(Method::HEAD, url).await.map_err(network)?;
+	let total = if mode == TransferMode::Resumable {
+		let head = adapter
+			.asset(AssetRequest::Metadata { url })
+			.await
+			.map_err(network)?;
 		check_status(&head)?;
-		let total = first_nonzero(head.content_length(), bar.length());
+		let total = first_nonzero(head.content_length(), progress.total());
 		current_state = ResumeState::from_response(&head, total);
 		if let Some(total) = total {
-			bar.set_length(total);
+			progress.report(ProgressEvent::Total(total));
 			protect_mismatch(final_path, total)
 				.await
 				.map_err(io_error)?;
 			if final_path.exists() {
 				remove_resume_state(&part).await.map_err(io_error)?;
 				remove_corrupt_backups(final_path).await.map_err(io_error)?;
-				bar.set_position(total);
+				progress.report(ProgressEvent::Position(total));
 				return Ok((true, total));
 			}
 		} else {
-			bar.unset_length();
+			progress.report(ProgressEvent::UnknownTotal);
 		}
 		total
 	} else {
@@ -129,21 +170,22 @@ pub(super) async fn transfer(
 	);
 	if total == Some(start) && start > 0 {
 		finalize(&part, final_path).await.map_err(io_error)?;
-		bar.set_position(start);
+		progress.report(ProgressEvent::Position(start));
 		return Ok((false, start));
 	}
 	let mut response = if start > 0 {
-		api.asset_from(
+		adapter.asset(AssetRequest::Resume {
 			url,
 			start,
-			&saved_state
+			validator: &saved_state
+				.as_ref()
 				.expect("resumed part has matching state")
 				.validator,
-		)
-		.await
+		})
 	} else {
-		api.asset(Method::GET, url).await
+		adapter.asset(AssetRequest::Download { url })
 	}
+	.await
 	.map_err(network)?;
 	check_status(&response)?;
 	if start > 0 && response.status() != StatusCode::PARTIAL_CONTENT {
@@ -155,7 +197,7 @@ pub(super) async fn transfer(
 		first_nonzero(response.content_length(), total)
 	};
 	if let Some(total) = total {
-		bar.set_length(total);
+		progress.report(ProgressEvent::Total(total));
 	}
 	if response.status() == StatusCode::PARTIAL_CONTENT {
 		let total = total.ok_or_else(|| {
@@ -173,7 +215,7 @@ pub(super) async fn transfer(
 		.open(&part)
 		.await
 		.map_err(io_error)?;
-	if resume && start == 0 {
+	if mode == TransferMode::Resumable && start == 0 {
 		write_resume_state(
 			&part,
 			ResumeState::from_response(&response, total).as_ref(),
@@ -181,8 +223,8 @@ pub(super) async fn transfer(
 		.await
 		.map_err(io_error)?;
 	}
-	bar.set_position(start);
-	bar.reset_eta();
+	progress.report(ProgressEvent::Position(start));
+	progress.report(ProgressEvent::ResetEta);
 	loop {
 		tokio::select! {
 			changed = cancel.changed() => {
@@ -191,15 +233,12 @@ pub(super) async fn transfer(
 					return Err(fatal("interrupted"));
 				}
 			}
-			chunk = response.chunk() => match chunk.map_err(|error| {
-				network(Error::with_debug(
-					"The media download was interrupted by a network error.",
-					error.without_url(),
-				))
-			})? {
+			chunk = response.chunk() => match chunk.map_err(network)? {
 				Some(chunk) => {
-					file.write_all(&chunk).await.map_err(io_error)?;
-					bar.inc(chunk.len() as u64);
+					file.write_all(chunk.as_ref()).await.map_err(io_error)?;
+					progress.report(ProgressEvent::Advance(
+						chunk.as_ref().len() as u64,
+					));
 				}
 				None => break,
 			}
@@ -214,7 +253,7 @@ pub(super) async fn transfer(
 	if final_path.exists() {
 		fs::remove_file(&part).await.map_err(io_error)?;
 		remove_corrupt_backups(final_path).await.map_err(io_error)?;
-		bar.set_position(bytes);
+		progress.report(ProgressEvent::Position(bytes));
 		return Ok((true, bytes));
 	}
 	finalize(&part, final_path).await.map_err(io_error)?;
@@ -314,7 +353,7 @@ async fn remove_corrupt_backups(path: &Path) -> std::io::Result<()> {
 }
 
 fn validate_content_range(
-	response: &Response,
+	response: &impl AssetResponse,
 	start: u64,
 	total: u64,
 ) -> Result<(), TransferError> {
@@ -337,7 +376,7 @@ fn valid_content_range(value: &str, start: u64, total: u64) -> bool {
 		&& value.ends_with(&format!("/{total}"))
 }
 
-fn check_status(response: &Response) -> Result<(), TransferError> {
+fn check_status(response: &impl AssetResponse) -> Result<(), TransferError> {
 	let status = response.status();
 	if status.is_success() {
 		return Ok(());

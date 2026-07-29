@@ -10,7 +10,7 @@ use console::style;
 use indicatif::{
 	MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
 };
-use tokio::{fs, sync::watch, task::JoinSet, time::sleep};
+use tokio::{fs, sync::watch, task::JoinSet};
 
 mod acquisition;
 mod mux;
@@ -20,9 +20,10 @@ use crate::{
 	error::Error,
 	select::PlannedRelease,
 };
-use acquisition::{backoff, file_len, retry_transfer, transfer};
-
-const RETRIES: usize = 3;
+use acquisition::{
+	EpisodeRequest, Outcome as AcquisitionOutcome, ProgressEvent, TransferMode,
+	TransferProgress, file_len, retry_transfer,
+};
 
 #[derive(Clone)]
 pub struct Job {
@@ -185,74 +186,53 @@ async fn download_job(
 	}
 	let bar =
 		bars.transfer_bar(&format!("{episode} • {}p", job.release.height));
-	let mut video_url = job.release.media_url.clone();
-	let mut subtitle_url = job.release.subtitle_url.clone();
-	let mut video_result = None;
-	for attempt in 0..=RETRIES {
-		if attempt > 0 {
-			match api.embed(job.release.translation.id).await {
-				Ok(embed) => {
-					video_url = embed
-						.download
-						.into_iter()
-						.find(|item| item.height == job.release.height)
-						.and_then(|item| item.url)
-						.unwrap_or(video_url);
-					subtitle_url = embed.subtitles_url.or(subtitle_url);
-				}
-				Err(error) => bar.set_message(format!(
-					"{episode} • refresh failed: {}",
-					error.render(bars.debug)
-				)),
-			}
-		}
-		match transfer(&api, &video_url, &video, true, &bar, &mut cancel).await
-		{
-			Ok(result) => {
-				video_result = Some(result);
-				break;
-			}
-			Err(error) if error.error.message() == "interrupted" => {
-				bar.finish_and_clear();
-				return Outcome {
-					episode,
-					status: Status::Interrupted,
-					bytes: file_len(&video).await,
-					detail:
-						"Interrupted; the resumable partial file was saved."
-							.into(),
-				};
-			}
-			Err(error) if error.retry && attempt < RETRIES => {
-				bar.set_message(format!(
-					"{episode} • retry {}/{}",
-					attempt + 1,
-					RETRIES
-				));
-				sleep(error.retry_after.unwrap_or_else(|| {
-					backoff(attempt, job.release.episode.id)
-				}))
-				.await;
-			}
-			Err(error) => {
-				bar.finish_and_clear();
-				return Outcome {
-					episode,
-					status: Status::Failed,
-					bytes: 0,
-					detail: error.error,
-				};
-			}
-		}
-	}
-	let (video_skipped, bytes) =
-		video_result.expect("retry loop always returns or succeeds");
+	let request = EpisodeRequest::new(&job.release, &video, &bar);
+	let request = if bars.debug {
+		request.with_debug_errors()
+	} else {
+		request
+	};
+	let acquisition = acquisition::acquire(&api, request, &mut cancel).await;
 	bar.finish_and_clear();
+	let (video_skipped, bytes, subtitle_url) = match acquisition {
+		AcquisitionOutcome::Downloaded {
+			bytes,
+			subtitle_url,
+		} => (false, bytes, subtitle_url),
+		AcquisitionOutcome::Skipped {
+			bytes,
+			subtitle_url,
+		} => (true, bytes, subtitle_url),
+		AcquisitionOutcome::Interrupted { bytes } => {
+			return Outcome {
+				episode,
+				status: Status::Interrupted,
+				bytes,
+				detail: "Interrupted; the resumable partial file was saved."
+					.into(),
+			};
+		}
+		AcquisitionOutcome::Failed(error) => {
+			return Outcome {
+				episode,
+				status: Status::Failed,
+				bytes: 0,
+				detail: error,
+			};
+		}
+	};
 	let mut subtitle_skipped = true;
 	if let Some(url) = &subtitle_url {
 		let sub_bar = bars.spinner(&format!("{episode} • ASS"));
-		match retry_transfer(&api, url, &subtitle, false, &sub_bar, &mut cancel)
-			.await
+		match retry_transfer(
+			&api,
+			url,
+			&subtitle,
+			TransferMode::Fresh,
+			&sub_bar,
+			&mut cancel,
+		)
+		.await
 		{
 			Ok((skipped, _)) => subtitle_skipped = skipped,
 			Err(error) => {
@@ -424,6 +404,36 @@ impl Bars {
 			eprintln!("{message}");
 		} else {
 			let _ = self.multi.println(message);
+		}
+	}
+}
+
+impl TransferProgress for ProgressBar {
+	fn total(&self) -> Option<u64> {
+		self.length()
+	}
+
+	fn report(&self, event: ProgressEvent<'_>) {
+		match event {
+			ProgressEvent::Total(total) => self.set_length(total),
+			ProgressEvent::UnknownTotal => self.unset_length(),
+			ProgressEvent::Position(position) => self.set_position(position),
+			ProgressEvent::ResetEta => self.reset_eta(),
+			ProgressEvent::Advance(bytes) => self.inc(bytes),
+			ProgressEvent::Retry {
+				episode,
+				attempt,
+				retries,
+			} => self
+				.set_message(format!("{episode} • retry {attempt}/{retries}")),
+			ProgressEvent::RefreshFailed {
+				episode,
+				error,
+				debug,
+			} => self.set_message(format!(
+				"{episode} • refresh failed: {}",
+				error.render(debug)
+			)),
 		}
 	}
 }
