@@ -17,9 +17,7 @@ use crate::{
 		series_id_from_url,
 	},
 	error::Error,
-	search::Search,
-	select,
-	series_cache::{self, Cache},
+	series_cache::{self, Catalogue},
 	telemetry::{CatalogueUse, Operation, Recorder},
 	ui::{self, selector},
 };
@@ -61,15 +59,10 @@ pub async fn choose(
 
 async fn choose_line(
 	api: &Anime365,
-	mut cache: Cache,
+	mut catalogue: Catalogue,
 	mut query: String,
 	telemetry: &Recorder,
 ) -> Result<Selection, Error> {
-	let cached_ids = cache
-		.series
-		.iter()
-		.map(|series| series.id)
-		.collect::<Vec<_>>();
 	if query.is_empty() {
 		query = ui::prompt("Search title or Anime365 catalogue URL:")?;
 	}
@@ -80,35 +73,42 @@ async fn choose_line(
 		});
 	}
 	let local_available =
-		!suggestions(&cache, &query, &[], 10, telemetry).is_empty();
+		!catalogue.suggestions(&query, &[], telemetry).is_empty();
 	let mut exact_ids = Vec::new();
 	match remote_search(api, &query, telemetry).await {
 		Ok(results) => {
 			exact_ids.extend(results.exact.iter().map(|series| series.id));
 			let mut incoming = results.exact;
 			incoming.extend(results.fallback);
-			upsert(&mut cache.series, incoming);
-			store(cache.clone(), telemetry).await;
+			catalogue.upsert(incoming);
+			store(catalogue.clone(), telemetry).await;
 		}
 		Err(error) if !local_available => return Err(error),
 		Err(_) => {}
 	}
-	let matches = suggestions(&cache, &query, &exact_ids, 10, telemetry);
-	let selected = select::choose_series(&matches)?;
+	let suggestions = catalogue.suggestions(&query, &exact_ids, telemetry);
+	let rows = suggestions.matching_rows(10);
+	if rows.is_empty() {
+		return Err("No matching Anime365 series found.".into());
+	}
+	let selected = suggestions
+		.series(ui::choose("Search results", &rows)?)
+		.cloned()
+		.unwrap();
 	match api.series(selected.id).await? {
 		Some(series) => {
 			if exact_ids.contains(&selected.id) {
-				cache.remember_alias(&query, selected.id);
-				store(cache, telemetry).await;
+				catalogue.remember_alias(&query, selected.id);
+				store(catalogue.clone(), telemetry).await;
 			}
 			Ok(Selection {
-				catalogue: catalogue_use(&cached_ids, series.id),
+				catalogue: catalogue.catalogue_use(series.id),
 				series,
 			})
 		}
 		None => {
-			cache.remove_series(selected.id);
-			store(cache, telemetry).await;
+			catalogue.remove_series(selected.id);
+			store(catalogue, telemetry).await;
 			Err("That cached Anime365 series no longer exists.".into())
 		}
 	}
@@ -116,21 +116,20 @@ async fn choose_line(
 
 async fn choose_interactive(
 	api: &Anime365,
-	mut cache: Cache,
+	mut catalogue: Catalogue,
 	prefill: String,
 	telemetry: &Recorder,
 ) -> Result<Selection, Error> {
-	let cached_ids = cache
-		.series
-		.iter()
-		.map(|series| series.id)
-		.collect::<Vec<_>>();
 	let term = Term::buffered_stdout();
-	let mut rows = select::series_rows(&cache.series);
-	let mut state =
-		selector::State::from_rows(&rows, prefill, telemetry.clone());
 	let mut server_matches = Vec::new();
-	prioritize(&mut state, &cache, &server_matches);
+	let mut state = selector::State::from_matches(prefill, Vec::new());
+	let (mut rows, matches) = catalogue_view(
+		&mut catalogue,
+		state.query(),
+		&server_matches,
+		telemetry,
+	);
+	state.set_matches(matches);
 	let mut layout = selector::Layout::new(&term, &rows);
 	let mut lines =
 		selector::draw(&term, SEARCH_LABEL, &rows, &mut layout, &mut state)
@@ -138,7 +137,7 @@ async fn choose_interactive(
 	let (updates_tx, mut updates) = mpsc::unbounded_channel();
 	let (cache_tx, cache_rx) = mpsc::unbounded_channel();
 	drop(tokio::spawn(write_cache(cache_rx, telemetry.clone())));
-	if !cache.is_fresh() {
+	if !catalogue.is_fresh() {
 		drop(tokio::spawn(refresh(api.clone(), updates_tx.clone())));
 	}
 	let mut search_task = schedule_search(api, &updates_tx, &state, telemetry);
@@ -176,7 +175,7 @@ async fn choose_interactive(
 				let visible = selector::visible_rows(&term);
 				match state.handle(key, visible) {
 					selector::Action::Selected(index) => {
-						let selected = cache.series[index].clone();
+						let selected = catalogue.series(index).clone();
 						let query = state.query().to_owned();
 						let confirmed = server_matches.contains(&selected.id);
 						selector::clear(&term, lines)
@@ -188,8 +187,9 @@ async fn choose_interactive(
 						match series? {
 							Some(series) => {
 								if confirmed {
-									cache.remember_alias(&query, selected.id);
-									let _ = cache_tx.send(cache.clone());
+									catalogue
+										.remember_alias(&query, selected.id);
+									let _ = cache_tx.send(catalogue.clone());
 								}
 								selector::write_choice(
 									&term,
@@ -199,20 +199,23 @@ async fn choose_interactive(
 								)
 								.map_err(selector::term_error)?;
 								return Ok(Selection {
-									catalogue: catalogue_use(
-										&cached_ids,
-										series.id,
-									),
+									catalogue: catalogue
+										.catalogue_use(series.id),
 									series,
 								});
 							}
 							None => {
-								cache.remove_series(selected.id);
-								let _ = cache_tx.send(cache.clone());
-								rows = select::series_rows(&cache.series);
+								catalogue.remove_series(selected.id);
+								let _ = cache_tx.send(catalogue.clone());
+								let view = catalogue_view(
+									&mut catalogue,
+									state.query(),
+									&server_matches,
+									telemetry,
+								);
+								rows = view.0;
 								layout.replace(&term, &rows);
-								state.replace(&rows);
-								prioritize(&mut state, &cache, &server_matches);
+								state.replace_matches(view.1);
 								ui::warning(
 									"That cached title no longer exists; removed it.",
 								);
@@ -231,7 +234,13 @@ async fn choose_interactive(
 					}
 					selector::Action::Changed => {
 						server_matches.clear();
-						prioritize(&mut state, &cache, &server_matches);
+						let matches = suggestion_matches(
+							&mut catalogue,
+							state.query(),
+							&server_matches,
+							telemetry,
+						);
+						state.set_matches(matches);
 						if let Some(task) = search_task.take() {
 							task.abort();
 						}
@@ -267,13 +276,25 @@ async fn choose_interactive(
 						query_results
 							.extend(incoming.iter().map(|series| series.id));
 						if !incoming.is_empty() {
-							upsert(&mut cache.series, incoming);
-							let _ = cache_tx.send(cache.clone());
-							rows = select::series_rows(&cache.series);
+							catalogue.upsert(incoming);
+							let _ = cache_tx.send(catalogue.clone());
+							let view = catalogue_view(
+								&mut catalogue,
+								state.query(),
+								&server_matches,
+								telemetry,
+							);
+							rows = view.0;
 							layout.replace(&term, &rows);
-							state.replace(&rows);
+							state.replace_matches(view.1);
+						} else {
+							state.replace_matches(suggestion_matches(
+								&mut catalogue,
+								state.query(),
+								&server_matches,
+								telemetry,
+							));
 						}
-						prioritize(&mut state, &cache, &server_matches);
 						state.select_first();
 					}
 					Err(error) if !state.has_matches() => {
@@ -296,51 +317,40 @@ async fn choose_interactive(
 			}
 			Event::Update(Some(Update::Page(offset, series))) => {
 				let query = state.query().trim();
-				if (offset == 0 && cache.series.is_empty())
+				if (offset == 0 && catalogue.is_empty())
 					|| (!query.is_empty()
-						&& !ranked_series(&series, query, 1, telemetry)
+						&& !Catalogue::ranked(&series, query, 1, telemetry)
 							.is_empty())
 				{
-					upsert(&mut cache.series, series);
-					rows = select::series_rows(&cache.series);
+					catalogue.upsert(series);
+					let view = catalogue_view(
+						&mut catalogue,
+						state.query(),
+						&server_matches,
+						telemetry,
+					);
+					rows = view.0;
 					layout.replace(&term, &rows);
-					state.replace(&rows);
-					prioritize(&mut state, &cache, &server_matches);
+					state.replace_matches(view.1);
 				}
 			}
-			Event::Update(Some(Update::Refreshed(mut refreshed))) => {
-				let selected =
-					state.selected_row().map(|index| cache.series[index].id);
-				let mut preserved_ids = query_results.clone();
-				preserved_ids.extend(cache.aliases.values().copied());
-				let mut ids = refreshed
-					.series
-					.iter()
-					.map(|series| series.id)
-					.collect::<HashSet<_>>();
-				refreshed.series.extend(
-					cache
-						.series
-						.iter()
-						.filter(|series| {
-							preserved_ids.contains(&series.id)
-								&& ids.insert(series.id)
-						})
-						.cloned(),
+			Event::Update(Some(Update::Refreshed(refreshed))) => {
+				let selected = state
+					.selected_row()
+					.map(|index| catalogue.series(index).id);
+				catalogue.merge_refresh(refreshed, &query_results);
+				let _ = cache_tx.send(catalogue.clone());
+				let view = catalogue_view(
+					&mut catalogue,
+					state.query(),
+					&server_matches,
+					telemetry,
 				);
-				refreshed.aliases.clone_from(&cache.aliases);
-				cache = refreshed;
-				let _ = cache_tx.send(cache.clone());
-				rows = select::series_rows(&cache.series);
+				rows = view.0;
 				layout.replace(&term, &rows);
-				state.replace(&rows);
-				prioritize(&mut state, &cache, &server_matches);
+				state.replace_matches(view.1);
 				if let Some(selected) = selected {
-					if let Some(row) = cache
-						.series
-						.iter()
-						.position(|series| series.id == selected)
-					{
+					if let Some(row) = catalogue.row_of(selected) {
 						state.select_row(row);
 					} else {
 						state.select_first();
@@ -365,7 +375,7 @@ enum Event {
 enum Update {
 	Search(String, ApiResult<RemoteResults>),
 	Page(usize, Vec<Series>),
-	Refreshed(Cache),
+	Refreshed(Catalogue),
 }
 
 struct RemoteResults {
@@ -410,7 +420,12 @@ async fn remote_search(
 	let fallback = if fallback_query == query {
 		Vec::new()
 	} else {
-		ranked_series(&api.search(fallback_query).await?, query, 10, telemetry)
+		Catalogue::ranked(
+			&api.search(fallback_query).await?,
+			query,
+			10,
+			telemetry,
+		)
 	};
 	Ok(RemoteResults { exact, fallback })
 }
@@ -441,15 +456,9 @@ async fn refresh(api: Anime365, updates: mpsc::UnboundedSender<Update>) {
 			reached_end = true;
 		}
 	}
-	let mut cache = Cache {
-		refreshed_at: 0,
-		series: pages.into_values().flatten().collect(),
-		aliases: BTreeMap::new(),
-	};
-	let mut ids = HashSet::new();
-	cache.series.retain(|series| ids.insert(series.id));
-	cache.mark_refreshed();
-	let _ = updates.send(Update::Refreshed(cache));
+	let catalogue =
+		Catalogue::refreshed(pages.into_values().flatten().collect());
+	let _ = updates.send(Update::Refreshed(catalogue));
 }
 
 fn spawn_page(
@@ -489,116 +498,46 @@ async fn load_url(api: &Anime365, input: &str) -> Result<Series, Error> {
 		.ok_or_else(|| "That Anime365 series no longer exists.".into())
 }
 
-fn ranked_series(
-	series: &[Series],
+fn catalogue_view(
+	catalogue: &mut Catalogue,
 	query: &str,
-	limit: usize,
+	server_matches: &[u64],
 	telemetry: &Recorder,
-) -> Vec<Series> {
-	let rows = select::series_rows(series);
-	let measurement =
-		telemetry.measure_items(Operation::SearchIndex, rows.len());
-	let search = Search::new(&rows);
-	drop(measurement);
-	let _measurement =
-		telemetry.measure_items(Operation::SearchRank, search.len());
-	search
-		.ranked(query)
-		.into_iter()
-		.take(limit)
-		.map(|index| series[index].clone())
-		.collect()
+) -> (Vec<[String; 4]>, Vec<usize>) {
+	let suggestions = catalogue.suggestions(query, server_matches, telemetry);
+	(suggestions.rows().to_vec(), suggestions.matches().to_vec())
 }
 
-fn suggestions(
-	cache: &Cache,
+fn suggestion_matches(
+	catalogue: &mut Catalogue,
 	query: &str,
 	server_matches: &[u64],
-	limit: usize,
 	telemetry: &Recorder,
-) -> Vec<Series> {
-	let rows = select::series_rows(&cache.series);
-	let measurement =
-		telemetry.measure_items(Operation::SearchIndex, rows.len());
-	let search = Search::new(&rows);
-	drop(measurement);
-	let _measurement =
-		telemetry.measure_items(Operation::SearchRank, search.len());
-	let mut seen = HashSet::new();
-	preferred_rows(cache, query, server_matches)
-		.into_iter()
-		.chain(search.ranked(query))
-		.filter(|index| seen.insert(*index))
-		.take(limit)
-		.map(|index| cache.series[index].clone())
-		.collect()
-}
-
-fn prioritize(
-	state: &mut selector::State,
-	cache: &Cache,
-	server_matches: &[u64],
-) {
-	state.prefer(preferred_rows(cache, state.query(), server_matches));
-}
-
-fn preferred_rows(
-	cache: &Cache,
-	query: &str,
-	server_matches: &[u64],
 ) -> Vec<usize> {
-	let mut ids = cache.alias(query).into_iter().collect::<Vec<_>>();
-	ids.extend_from_slice(server_matches);
-	let mut seen = HashSet::new();
-	// ponytail: at most 11 priorities; add an ID index if that limit grows.
-	ids.into_iter()
-		.filter(|id| seen.insert(*id))
-		.filter_map(|id| cache.series.iter().position(|series| series.id == id))
-		.collect()
-}
-
-fn catalogue_use(cached_ids: &[u64], selected_id: u64) -> CatalogueUse {
-	if cached_ids.contains(&selected_id) {
-		CatalogueUse::Hit
-	} else {
-		CatalogueUse::Miss
-	}
-}
-
-fn upsert(current: &mut Vec<Series>, incoming: Vec<Series>) {
-	let mut positions = current
-		.iter()
-		.enumerate()
-		.map(|(index, series)| (series.id, index))
-		.collect::<std::collections::HashMap<_, _>>();
-	for series in incoming {
-		if let Some(index) = positions.get(&series.id).copied() {
-			current[index] = series;
-		} else {
-			positions.insert(series.id, current.len());
-			current.push(series);
-		}
-	}
+	catalogue
+		.suggestions(query, server_matches, telemetry)
+		.matches()
+		.to_vec()
 }
 
 async fn write_cache(
-	mut caches: mpsc::UnboundedReceiver<Cache>,
+	mut catalogues: mpsc::UnboundedReceiver<Catalogue>,
 	telemetry: Recorder,
 ) {
-	while let Some(mut cache) = caches.recv().await {
-		while let Ok(newer) = caches.try_recv() {
-			cache = newer;
+	while let Some(mut catalogue) = catalogues.recv().await {
+		while let Ok(newer) = catalogues.try_recv() {
+			catalogue = newer;
 		}
-		store(cache, &telemetry).await;
+		store(catalogue, &telemetry).await;
 	}
 }
 
-async fn store(cache: Cache, telemetry: &Recorder) {
+async fn store(catalogue: Catalogue, telemetry: &Recorder) {
 	let telemetry = telemetry.clone();
 	let _ = tokio::task::spawn_blocking(move || {
 		let _measurement =
-			telemetry.measure_items(Operation::CacheStore, cache.series.len());
-		series_cache::store(&cache);
+			telemetry.measure_items(Operation::CacheStore, catalogue.len());
+		series_cache::store(&catalogue);
 	})
 	.await;
 }

@@ -1,7 +1,7 @@
 use pretty_assertions::assert_eq;
 
 use super::{State, input_window, query_and_choice};
-use crate::{search::Search, telemetry::Recorder};
+use crate::search::Search;
 
 fn state(count: usize) -> State {
 	let rows = (1..=count)
@@ -65,16 +65,6 @@ fn parses_filtered_choices_and_numeric_queries() {
 }
 
 #[test]
-fn prioritizes_rows_that_do_not_match_the_query() {
-	let rows = [["Alpha".into()], ["Jujutsu Kaisen".into()]];
-	let mut state = State::from_rows(&rows, "jjk".into(), Recorder::default());
-
-	state.prefer(vec![1, 1]);
-
-	assert_eq!((state.matches.clone(), state.choice()), (vec![1], Some(1)));
-}
-
-#[test]
 fn keeps_the_cursor_visible_in_long_unicode_input() {
 	let input = "Врата Штейна";
 
@@ -83,16 +73,10 @@ fn keeps_the_cursor_visible_in_long_unicode_input() {
 
 #[test]
 fn preserves_the_query_when_live_results_arrive() {
-	let initial = [["Unrelated".into()]];
-	let mut state = State::from_rows(
-		&initial,
-		"битва магическая".into(),
-		Recorder::default(),
-	);
+	let mut state = State::from_matches("битва магическая".into(), Vec::new());
 	assert_eq!((state.query(), state.choice()), ("битва магическая", None));
 
-	let refreshed = [["Магическая битва".into()]];
-	state.replace(&refreshed);
+	state.replace_matches(vec![0]);
 
 	assert_eq!(
 		(state.query(), state.choice()),
@@ -106,11 +90,8 @@ fn preserves_the_selection_and_viewport_when_rows_are_appended() {
 	for _ in 0..10 {
 		state.down(10);
 	}
-	let rows = (1..=13)
-		.map(|number| [format!("Choice {number}")])
-		.collect::<Vec<_>>();
 
-	state.replace(&rows);
+	state.replace_matches((0..13).collect());
 
 	assert_eq!(
 		(state.matches[state.selected], state.selected, state.offset),

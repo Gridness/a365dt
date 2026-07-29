@@ -4,12 +4,12 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::series_cache::{self, Cache};
+use crate::series_cache::{self, Catalogue};
 
 pub(super) enum Inspection {
 	Ready {
 		path: PathBuf,
-		cache: Cache,
+		cache: Catalogue,
 		bytes: u64,
 	},
 	Missing(PathBuf),
@@ -38,7 +38,7 @@ pub(super) fn inspect() -> Inspection {
 			};
 		}
 	};
-	match serde_json::from_slice(&contents) {
+	match series_cache::decode(&contents) {
 		Ok(cache) => Inspection::Ready {
 			path,
 			cache,
@@ -51,8 +51,8 @@ pub(super) fn inspect() -> Inspection {
 	}
 }
 
-pub(super) fn age(cache: &Cache) -> Duration {
-	Duration::from_secs(now().saturating_sub(cache.refreshed_at))
+pub(super) fn age(cache: &Catalogue) -> Duration {
+	Duration::from_secs(now().saturating_sub(cache.refreshed_at()))
 }
 
 fn now() -> u64 {

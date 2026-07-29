@@ -222,12 +222,12 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 		CacheInspection::Ready { cache, bytes, .. } => vec![
 			Check::new(
 				"Last cache update",
-				telemetry::format_timestamp(Some(cache.refreshed_at)),
+				telemetry::format_timestamp(Some(cache.refreshed_at())),
 				Status::Info,
 			),
 			Check::new(
 				"Cached Series",
-				format!("{} · {}", cache.series.len(), HumanBytes(*bytes)),
+				format!("{} · {}", cache.len(), HumanBytes(*bytes)),
 				Status::Info,
 			),
 		],
