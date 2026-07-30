@@ -87,6 +87,7 @@ fn routes_unknown_command_arguments_through_title_search() {
 		&["a365dt", "doctor", "elise"][..],
 		&["a365dt", "telemetry", "this"][..],
 		&["a365dt", "telemetry", "show", "this"][..],
+		&["a365dt", "update", "this"][..],
 	] {
 		let mut args = Args::try_parse_from(arguments.iter().copied()).unwrap();
 
@@ -108,10 +109,12 @@ fn preserves_existing_commands() {
 	let mut completions =
 		Args::try_parse_from(["a365dt", "completions", "zsh"]).unwrap();
 	let mut doctor = Args::try_parse_from(["a365dt", "doctor"]).unwrap();
+	let mut update = Args::try_parse_from(["a365dt", "update"]).unwrap();
 
 	route_title_query(&mut cache);
 	route_title_query(&mut completions);
 	route_title_query(&mut doctor);
+	route_title_query(&mut update);
 
 	assert!(matches!(
 		cache.command,
@@ -128,5 +131,9 @@ fn preserves_existing_commands() {
 	assert!(matches!(
 		doctor.command,
 		Some(Commands::Doctor { query }) if query.is_empty()
+	));
+	assert!(matches!(
+		update.command,
+		Some(Commands::Update { query }) if query.is_empty()
 	));
 }

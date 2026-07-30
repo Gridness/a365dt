@@ -56,9 +56,9 @@ a365dt
 ```
 
 Interactive sessions show one bundled Tip and check GitHub for a newer stable
-release at most once per day. Update checks time out after two seconds and
-fail silently; when an update is available, a365dt shows instructions for the
-detected installation channel.
+release at most once every ten minutes. Update checks time out after two
+seconds and fail silently; when an update is available, a365dt shows
+instructions for the detected installation channel.
 
 Prefill it with a title or open an Anime365 catalogue URL directly:
 
@@ -104,8 +104,13 @@ a365dt purge
 a365dt purge --yes
 a365dt telemetry show
 a365dt telemetry disable
+a365dt update
 a365dt --help
 ```
+
+`a365dt update` performs a fresh, read-only update check. It prints upgrade
+instructions for the detected installation channel when a newer stable release
+is available.
 
 `purge` removes a365dt cache, configuration, local data, and the saved macOS
 Keychain token. It does not remove downloaded media or the installed program.
@@ -123,10 +128,11 @@ catalogue when search began. Download success includes both downloaded and
 previously verified, skipped Episodes.
 
 `a365dt doctor` checks Anime365 reachability and latency, cache freshness,
-local telemetry health, recent performance, usage statistics, and build
-details. `--debug` adds paths, raw per-operation latency, collection dates,
-and a local telemetry-overhead benchmark. Statuses use `✓`, `●`, `○`, and
-`✗`; unavailable fields include the command or action needed to restore them.
+local telemetry health, recent performance, usage statistics, build details,
+and whether a newer stable a365dt release is available. `--debug` adds paths,
+raw per-operation latency, collection dates, update-check failures, and a local
+telemetry-overhead benchmark. Statuses use `✓`, `●`, `○`, and `✗`; unavailable
+fields include the command or action needed to restore them.
 
 ## Development
 

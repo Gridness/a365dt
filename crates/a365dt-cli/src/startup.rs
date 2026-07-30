@@ -13,7 +13,7 @@ use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::app_files;
+use crate::{app_files, error::Error};
 
 const TIPS: &str = include_str!("../tips.txt");
 const LATEST_RELEASE_URL: &str =
@@ -21,13 +21,14 @@ const LATEST_RELEASE_URL: &str =
 const CACHE_FILE: &str = "latest-release.json";
 const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const CHECK_FAILURE: &str = "Could not check for updates.";
 
 pub async fn show() {
 	if !io::stdout().is_terminal() {
 		return;
 	}
 
-	let update = latest_release().await.and_then(available_update);
+	let update = cached_update().await;
 	println!();
 	if let Some(update) = update {
 		show_update(&update);
@@ -39,50 +40,80 @@ pub async fn show() {
 	}
 }
 
-async fn latest_release() -> Option<Release> {
-	let Some(cache_path) = app_files::cache_directory()
-		.map(|directory| directory.join(CACHE_FILE))
-	else {
-		return fetch_release().await;
+pub async fn check() -> Result<Option<Update>, Error> {
+	let (release, update) = fetch_update().await?;
+	if let Some(cache_path) = cache_path() {
+		write_cache(
+			&cache_path,
+			&CacheContents {
+				release: Some(release),
+			},
+		);
+	}
+	Ok(update)
+}
+
+async fn cached_update() -> Option<Update> {
+	let Some(cache_path) = cache_path() else {
+		return fetch_update().await.ok()?.1;
 	};
 	match read_cache(&cache_path) {
-		Cache::Fresh(contents) => contents.release,
-		Cache::Stale(contents) => refresh_release(&cache_path, contents).await,
+		Cache::Fresh(contents) => update_from_cache(contents),
+		Cache::Stale(contents) => refresh_update(&cache_path, contents).await,
 		Cache::Missing => {
-			refresh_release(&cache_path, CacheContents::default()).await
+			refresh_update(&cache_path, CacheContents::default()).await
 		}
 	}
 }
 
-async fn refresh_release(
+async fn refresh_update(
 	cache_path: &Path,
 	cached: CacheContents,
-) -> Option<Release> {
-	let contents = CacheContents {
-		release: fetch_release().await.or(cached.release),
+) -> Option<Update> {
+	let Ok((release, update)) = fetch_update().await else {
+		return update_from_cache(cached);
 	};
-	write_cache(cache_path, &contents);
-	contents.release
+	write_cache(
+		cache_path,
+		&CacheContents {
+			release: Some(release),
+		},
+	);
+	update
 }
 
-async fn fetch_release() -> Option<Release> {
+async fn fetch_update() -> Result<(Release, Option<Update>), Error> {
+	let release = fetch_release().await?;
+	let update = available_update(release.clone())?;
+	Ok((release, update))
+}
+
+async fn fetch_release() -> Result<Release, Error> {
 	let client = reqwest::Client::builder()
 		.user_agent(concat!("a365dt/", env!("CARGO_PKG_VERSION")))
 		.timeout(REQUEST_TIMEOUT)
 		.build()
-		.ok()?;
+		.map_err(check_error)?;
 	let release = client
 		.get(LATEST_RELEASE_URL)
 		.header("Accept", "application/vnd.github+json")
 		.send()
 		.await
-		.ok()?
+		.map_err(check_error)?
 		.error_for_status()
-		.ok()?
+		.map_err(check_error)?
 		.json::<Release>()
 		.await
-		.ok()?;
-	Some(release)
+		.map_err(check_error)?;
+	Ok(release)
+}
+
+fn check_error(error: impl std::fmt::Display) -> Error {
+	Error::with_debug(CHECK_FAILURE, error)
+}
+
+fn cache_path() -> Option<PathBuf> {
+	app_files::cache_directory().map(|directory| directory.join(CACHE_FILE))
 }
 
 fn read_cache(path: &Path) -> Cache {
@@ -118,30 +149,45 @@ fn write_cache(path: &Path, cache: &CacheContents) {
 	}
 }
 
-fn available_update(release: Release) -> Option<Update> {
+fn update_from_cache(contents: CacheContents) -> Option<Update> {
+	contents
+		.release
+		.and_then(|release| available_update(release).ok().flatten())
+}
+
+fn available_update(release: Release) -> Result<Option<Update>, Error> {
 	update_from(env!("CARGO_PKG_VERSION"), release)
 }
 
-fn update_from(installed: &str, release: Release) -> Option<Update> {
-	let installed = Version::parse(installed).ok()?;
-	let available = Version::parse(
-		release
-			.tag_name
-			.strip_prefix('v')
-			.unwrap_or(release.tag_name.as_str()),
-	)
-	.ok()?;
+fn update_from(
+	installed: &str,
+	release: Release,
+) -> Result<Option<Update>, Error> {
+	let installed = Version::parse(installed).map_err(|error| {
+		check_error(format!(
+			"Could not parse installed version `{installed}`: {error}"
+		))
+	})?;
+	let available = release
+		.tag_name
+		.strip_prefix('v')
+		.unwrap_or(release.tag_name.as_str());
+	let available = Version::parse(available).map_err(|error| {
+		check_error(format!(
+			"Could not parse release version `{available}`: {error}"
+		))
+	})?;
 	if available <= installed || !available.pre.is_empty() {
-		return None;
+		return Ok(None);
 	}
-	Some(Update {
+	Ok(Some(Update {
 		installed,
 		available,
 		release_url: release.html_url,
-	})
+	}))
 }
 
-fn show_update(update: &Update) {
+pub fn show_update(update: &Update) {
 	println!(
 		"{} {} {} {}",
 		style("💫 Upgrade available:").blue().bold(),
@@ -358,10 +404,10 @@ enum Cache {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Update {
-	installed: Version,
-	available: Version,
-	release_url: String,
+pub struct Update {
+	pub installed: Version,
+	pub available: Version,
+	pub release_url: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -24,6 +24,7 @@ fn records_aggregate_usage_without_download_identity() {
 	let paths = paths("aggregate");
 	let recorder = Recorder::from_paths(paths.clone()).unwrap();
 	recorder.record_command(Command::Download, CommandOutcome::Success);
+	recorder.record_command(Command::Update, CommandOutcome::Failure);
 	recorder.record_catalogue(CatalogueUse::Hit);
 	recorder.record_download(&Summary {
 		outcomes: vec![
@@ -51,6 +52,7 @@ fn records_aggregate_usage_without_download_identity() {
 		BTreeMap::from([
 			("catalogue.hits".into(), 1),
 			("commands.download.success".into(), 1),
+			("commands.update.failure".into(), 1),
 			("downloads.batches".into(), 1),
 			("downloads.bytes".into(), 42),
 			("downloads.episodes.downloaded".into(), 1),

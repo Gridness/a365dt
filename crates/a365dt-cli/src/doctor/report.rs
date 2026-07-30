@@ -12,6 +12,7 @@ pub(super) enum Status {
 	Error,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub(super) struct Check {
 	label: String,
 	value: String,

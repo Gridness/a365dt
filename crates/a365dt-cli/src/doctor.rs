@@ -5,6 +5,7 @@ use indicatif::{HumanBytes, HumanDuration};
 use crate::{
 	error::Error,
 	series_cache,
+	startup::{self, Update},
 	telemetry::{self, PerformanceMetric, Snapshot},
 };
 
@@ -19,7 +20,7 @@ use report::{Check, Report, Section, Status};
 use server::Probe as ServerProbe;
 
 pub async fn run(debug: bool) -> ExitCode {
-	let server = server::probe().await;
+	let (server, update) = tokio::join!(server::probe(), startup::check());
 	let cache = cache::inspect();
 	let telemetry = telemetry::snapshot();
 	let mut sections = vec![
@@ -36,14 +37,14 @@ pub async fn run(debug: bool) -> ExitCode {
 		Section {
 			title: "Build",
 			debug: false,
-			checks: build_checks(),
+			checks: build_checks(&update),
 		},
 	];
 	if debug {
 		sections.push(Section {
 			title: "Debug diagnostics",
 			debug: true,
-			checks: debug_checks(&server, &cache, &telemetry),
+			checks: debug_checks(&server, &cache, &telemetry, &update),
 		});
 	}
 	let report = Report { sections };
@@ -246,9 +247,9 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 	}
 }
 
-fn build_checks() -> Vec<Check> {
+fn build_checks(update: &Result<Option<Update>, Error>) -> Vec<Check> {
 	vec![
-		Check::new("Version", env!("CARGO_PKG_VERSION"), Status::Info),
+		version_check(update),
 		Check::new("Commit", env!("A365DT_COMMIT_SHA"), Status::Info),
 		Check::new("Profile", env!("A365DT_BUILD_PROFILE"), Status::Info),
 		Check::new(
@@ -260,10 +261,33 @@ fn build_checks() -> Vec<Check> {
 	]
 }
 
+fn version_check(update: &Result<Option<Update>, Error>) -> Check {
+	match update {
+		Ok(Some(update)) => Check::new(
+			"Version",
+			format!("{} → {} available", update.installed, update.available),
+			Status::Warning,
+		)
+		.remedy("Run `a365dt update`"),
+		Ok(None) => Check::new(
+			"Version",
+			concat!(env!("CARGO_PKG_VERSION"), " · up to date"),
+			Status::Healthy,
+		),
+		Err(_) => Check::new(
+			"Version",
+			concat!(env!("CARGO_PKG_VERSION"), " · update check unavailable"),
+			Status::Warning,
+		)
+		.remedy("Check the network or GitHub status, then retry"),
+	}
+}
+
 fn debug_checks(
 	server: &ServerProbe,
 	cache: &CacheInspection,
 	snapshot: &Result<Snapshot, Error>,
+	update: &Result<Option<Update>, Error>,
 ) -> Vec<Check> {
 	let mut checks = vec![
 		Check::new("Server endpoint", server::URL, Status::Info),
@@ -287,6 +311,13 @@ fn debug_checks(
 	];
 	if let Some(detail) = &server.detail {
 		checks.push(Check::new("Server detail", detail, Status::Info));
+	}
+	if let Err(error) = update {
+		checks.push(Check::new(
+			"Update check detail",
+			error.render(true),
+			Status::Info,
+		));
 	}
 	let (cache_path, cache_detail) = match cache {
 		CacheInspection::Ready { path, cache, .. } => (
