@@ -1,8 +1,9 @@
 use std::{
 	collections::VecDeque,
+	future::pending,
 	path::{Path, PathBuf},
 	sync::Mutex,
-	time::{SystemTime, UNIX_EPOCH},
+	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -12,28 +13,51 @@ use reqwest::{
 	StatusCode,
 	header::{self, HeaderMap, HeaderValue},
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 
 use super::adapter::{Adapter, Request, Response};
 use super::{Acquisition, AcquisitionStatus, TransferError, acquire};
-use crate::error::Error;
+use crate::{
+	api::{Embed, Episode, MediaOption, Translation},
+	error::Error,
+	select::PlannedRelease,
+};
 
 const URL: &str = "https://media.test/episode.mp4";
+const REFRESHED_URL: &str = "https://media.test/refreshed.mp4";
 const ETAG: &str = "\"asset\"";
 
-type Body = VecDeque<Result<Bytes, Error>>;
+enum BodyStep {
+	Chunk(Bytes),
+	Error(Error),
+	Cancel(watch::Sender<bool>),
+}
+
+type Body = VecDeque<BodyStep>;
 
 struct ScriptedAdapter {
 	responses: Mutex<VecDeque<Response<Body>>>,
+	refreshes: Mutex<VecDeque<Result<Embed, Error>>>,
 	requests: Mutex<Vec<ObservedRequest>>,
+	started: Instant,
 }
 
 impl ScriptedAdapter {
 	fn new(responses: impl IntoIterator<Item = Response<Body>>) -> Self {
 		Self {
 			responses: Mutex::new(responses.into_iter().collect()),
+			refreshes: Mutex::new(VecDeque::new()),
 			requests: Mutex::new(Vec::new()),
+			started: Instant::now(),
 		}
+	}
+
+	fn with_refreshes(
+		mut self,
+		refreshes: impl IntoIterator<Item = Result<Embed, Error>>,
+	) -> Self {
+		*self.refreshes.get_mut().unwrap() = refreshes.into_iter().collect();
+		self
 	}
 
 	fn requests(&self) -> Vec<ObservedRequest> {
@@ -60,12 +84,44 @@ impl Adapter for ScriptedAdapter {
 		&self,
 		body: &mut Self::Body,
 	) -> Result<Option<Bytes>, Error> {
-		body.pop_front().transpose()
+		match body.pop_front() {
+			Some(BodyStep::Chunk(chunk)) => Ok(Some(chunk)),
+			Some(BodyStep::Error(error)) => Err(error),
+			Some(BodyStep::Cancel(cancel)) => {
+				cancel.send(true).unwrap();
+				pending().await
+			}
+			None => Ok(None),
+		}
+	}
+
+	async fn refresh(&self, translation_id: u64) -> Result<Embed, Error> {
+		self.requests
+			.lock()
+			.unwrap()
+			.push(ObservedRequest::Refresh {
+				translation_id,
+				after: self.started.elapsed(),
+			});
+		self.refreshes
+			.lock()
+			.unwrap()
+			.pop_front()
+			.unwrap_or_else(|| {
+				Ok(Embed {
+					download: Vec::new(),
+					subtitles_url: None,
+				})
+			})
 	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ObservedRequest {
+	Refresh {
+		translation_id: u64,
+		after: Duration,
+	},
 	Head(String),
 	Get(String),
 	Resume {
@@ -131,7 +187,7 @@ struct Observation {
 fn body(chunks: impl IntoIterator<Item = &'static [u8]>) -> Body {
 	chunks
 		.into_iter()
-		.map(|chunk| Ok(Bytes::from_static(chunk)))
+		.map(|chunk| BodyStep::Chunk(Bytes::from_static(chunk)))
 		.collect()
 }
 
@@ -187,6 +243,20 @@ fn partial_response(
 	}
 }
 
+fn retry_after_response(status: StatusCode, seconds: u64) -> Response<Body> {
+	let mut headers = HeaderMap::new();
+	headers.insert(
+		header::RETRY_AFTER,
+		HeaderValue::from_str(&seconds.to_string()).unwrap(),
+	);
+	Response {
+		status,
+		headers,
+		content_length: None,
+		body: Body::new(),
+	}
+}
+
 async fn write_partial(
 	directory: &TestDirectory,
 	bytes: &[u8],
@@ -209,9 +279,10 @@ async fn acquire_and_observe(
 	adapter: &ScriptedAdapter,
 ) -> Observation {
 	let (_cancel_tx, mut cancel) = watch::channel(false);
+	let release = release();
 	let result = acquire(
 		adapter,
-		URL,
+		&release,
 		&directory.path("episode.mp4"),
 		&ProgressBar::hidden(),
 		&mut cancel,
@@ -245,7 +316,65 @@ fn downloaded(bytes: u64) -> Result<Acquisition, TransferError> {
 	Ok(Acquisition {
 		status: AcquisitionStatus::Downloaded,
 		bytes,
+		subtitle_url: None,
 	})
+}
+
+fn release() -> PlannedRelease {
+	PlannedRelease {
+		episode: Episode {
+			id: 42,
+			episode_int: "1".into(),
+			episode_full: "1 серия".into(),
+		},
+		translation: Translation {
+			id: 7,
+			episode_id: 42,
+			kind: "voice".into(),
+			language: "ru".into(),
+			authors_summary: "Test".into(),
+		},
+		height: 1080,
+		media_url: URL.into(),
+		subtitle_url: None,
+	}
+}
+
+fn refresh(after_ms: u64) -> ObservedRequest {
+	ObservedRequest::Refresh {
+		translation_id: 7,
+		after: Duration::from_millis(after_ms),
+	}
+}
+
+fn resume(url: &str, start: u64) -> ObservedRequest {
+	ObservedRequest::Resume {
+		url: url.into(),
+		start,
+		validator: ETAG.into(),
+	}
+}
+
+fn failed(
+	message: &str,
+	requests: Vec<ObservedRequest>,
+	part: &[u8],
+) -> Observation {
+	Observation {
+		result: Err(TransferError {
+			error: Error::new(message),
+			retry: true,
+			retry_after: None,
+		}),
+		requests,
+		files: vec![
+			("episode.mp4.part".into(), part.to_vec()),
+			(
+				"episode.mp4.part.state".into(),
+				format!("4\n{ETAG}").into_bytes(),
+			),
+		],
+	}
 }
 
 #[tokio::test]
@@ -283,6 +412,7 @@ async fn skips_matching_final_video_without_requesting_its_body() {
 			result: Ok(Acquisition {
 				status: AcquisitionStatus::Skipped,
 				bytes: 4,
+				subtitle_url: None,
 			}),
 			requests: vec![ObservedRequest::Head(URL.into())],
 			files: vec![("episode.mp4".into(), b"good".to_vec())],
@@ -479,36 +609,39 @@ async fn accepts_nonempty_video_without_declared_total() {
 	);
 }
 
-#[tokio::test]
-async fn keeps_resumable_state_when_video_does_not_match_known_total() {
+#[tokio::test(start_paused = true)]
+async fn retries_incomplete_video_and_preserves_its_resumable_state() {
 	let directory = TestDirectory::new();
 	let adapter = ScriptedAdapter::new([
 		tagged_response(4, ETAG, []),
 		tagged_response(4, ETAG, [b"bad".as_slice()]),
+		tagged_response(4, ETAG, []),
+		partial_response("bytes 3-3/4", []),
+		tagged_response(4, ETAG, []),
+		partial_response("bytes 3-3/4", []),
+		tagged_response(4, ETAG, []),
+		partial_response("bytes 3-3/4", []),
 	]);
 
 	assert_eq!(
 		acquire_and_observe(&directory, &adapter).await,
-		Observation {
-			result: Err(TransferError {
-				error: Error::new(
-					"The downloaded file was incomplete (3 of 4 bytes).",
-				),
-				retry: true,
-				retry_after: None,
-			}),
-			requests: vec![
+		failed(
+			"The downloaded file was incomplete (3 of 4 bytes).",
+			vec![
 				ObservedRequest::Head(URL.into()),
 				ObservedRequest::Get(URL.into()),
+				refresh(1_042),
+				ObservedRequest::Head(URL.into()),
+				resume(URL, 3),
+				refresh(3_084),
+				ObservedRequest::Head(URL.into()),
+				resume(URL, 3),
+				refresh(7_126),
+				ObservedRequest::Head(URL.into()),
+				resume(URL, 3),
 			],
-			files: vec![
-				("episode.mp4.part".into(), b"bad".to_vec()),
-				(
-					"episode.mp4.part.state".into(),
-					format!("4\n{ETAG}").into_bytes(),
-				),
-			],
-		}
+			b"bad",
+		)
 	);
 }
 
@@ -535,3 +668,6 @@ async fn replaces_mismatched_final_video_and_removes_backup() {
 		}
 	);
 }
+
+#[path = "acquisition_retry_tests.rs"]
+mod retry_tests;

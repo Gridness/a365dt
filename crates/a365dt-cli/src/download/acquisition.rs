@@ -13,24 +13,29 @@ use tokio::{
 	time::sleep,
 };
 
-use super::RETRIES;
 use crate::error::Error;
 
 mod adapter;
+mod episode;
 
 pub(super) use adapter::Anime365Adapter;
 use adapter::{Adapter, Request, Response};
+pub(super) use episode::acquire;
+
+const RETRIES: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AcquisitionStatus {
 	Downloaded,
 	Skipped,
+	Interrupted,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Acquisition {
 	pub(super) status: AcquisitionStatus,
 	pub(super) bytes: u64,
+	pub(super) subtitle_url: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,16 +92,6 @@ impl ResumeState {
 	}
 }
 
-pub(super) async fn acquire<A: Adapter>(
-	adapter: &A,
-	url: &str,
-	path: &Path,
-	bar: &ProgressBar,
-	cancel: &mut watch::Receiver<bool>,
-) -> Result<Acquisition, TransferError> {
-	transfer(adapter, url, path, TransferMode::Resumable, bar, cancel).await
-}
-
 pub(super) async fn retry_transfer<A: Adapter>(
 	adapter: &A,
 	url: &str,
@@ -145,6 +140,7 @@ async fn transfer<A: Adapter>(
 				return Ok(Acquisition {
 					status: AcquisitionStatus::Skipped,
 					bytes: total,
+					subtitle_url: None,
 				});
 			}
 		} else {
@@ -172,6 +168,7 @@ async fn transfer<A: Adapter>(
 		return Ok(Acquisition {
 			status: AcquisitionStatus::Downloaded,
 			bytes: start,
+			subtitle_url: None,
 		});
 	}
 	let mut response = if start > 0 {
@@ -257,12 +254,14 @@ async fn transfer<A: Adapter>(
 		return Ok(Acquisition {
 			status: AcquisitionStatus::Skipped,
 			bytes,
+			subtitle_url: None,
 		});
 	}
 	finalize(&part, final_path).await.map_err(io_error)?;
 	Ok(Acquisition {
 		status: AcquisitionStatus::Downloaded,
 		bytes,
+		subtitle_url: None,
 	})
 }
 
