@@ -39,6 +39,15 @@ fn forces_multi_word_command_names_through_title_search() {
 }
 
 #[test]
+fn parses_mux_after_query_and_its_aliases() {
+	for option in ["--mux", "--burn-subtitles", "--as-single-file"] {
+		let args = Args::try_parse_from(["a365dt", "Frieren", option]).unwrap();
+
+		assert_eq!((args.query, args.mux), (vec!["Frieren".to_owned()], true));
+	}
+}
+
+#[test]
 fn parses_telemetry_control_commands() {
 	let args =
 		Args::try_parse_from(["a365dt", "telemetry", "disable"]).unwrap();
