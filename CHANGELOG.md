@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Gridness/a365dt/compare/v0.8.1...v0.9.0) (2026-07-30)
+
+
+### Features
+
+* **cli:** add non-interactive subtitle muxing ([#55](https://github.com/Gridness/a365dt/issues/55)) ([b36d43f](https://github.com/Gridness/a365dt/commit/b36d43f306e882204fa6fd10799a1d163b5537f3))
+
 ## [0.8.1](https://github.com/Gridness/a365dt/compare/v0.8.0...v0.8.1) (2026-07-29)
 
 
