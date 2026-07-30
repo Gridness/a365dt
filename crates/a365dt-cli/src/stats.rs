@@ -1,7 +1,8 @@
 use indicatif::HumanBytes;
 
 use crate::{
-	doctor::{CacheInspection, Check, Status, inspect_cache},
+	cache::{Inspection as CacheInspection, Store},
+	doctor::{Check, Status},
 	error::Error,
 	telemetry::{self, Snapshot},
 	ui,
@@ -11,9 +12,9 @@ mod metrics;
 
 use metrics::{Aggregate, aggregate};
 
-pub fn run() {
+pub async fn run(store: &Store) {
 	ui::heading("a365dt stats");
-	let cache = inspect_cache();
+	let cache = store.inspect().await;
 	let telemetry = telemetry::snapshot();
 	let rows = statistic_checks(&cache, &telemetry)
 		.iter()
@@ -142,15 +143,20 @@ fn statistic_checks(
 
 fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 	match cache {
-		CacheInspection::Ready { cache, bytes, .. } => vec![
+		CacheInspection::Ready {
+			refreshed_at,
+			series,
+			bytes,
+			..
+		} => vec![
 			Check::new(
 				"Last cache update",
-				telemetry::format_timestamp(Some(cache.refreshed_at())),
+				telemetry::format_timestamp(Some(*refreshed_at)),
 				Status::Info,
 			),
 			Check::new(
 				"Cached Series",
-				format!("{} · {}", cache.len(), HumanBytes(*bytes)),
+				format!("{} · {}", series, HumanBytes(*bytes)),
 				Status::Info,
 			),
 		],

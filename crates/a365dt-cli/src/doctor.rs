@@ -3,26 +3,22 @@ use std::process::ExitCode;
 use indicatif::{HumanBytes, HumanDuration};
 
 use crate::{
+	cache::{Inspection as CacheInspection, MAX_AGE, Store},
 	error::Error,
-	series_cache,
 	startup::{self, Update},
 	telemetry::{self, PerformanceMetric, Snapshot},
 };
 
-mod cache;
 mod report;
 mod server;
 
-pub(crate) use cache::{
-	Inspection as CacheInspection, inspect as inspect_cache,
-};
 pub(crate) use report::{Check, Status};
 use report::{Report, Section};
 use server::Probe as ServerProbe;
 
-pub async fn run(debug: bool) -> ExitCode {
-	let (server, update) = tokio::join!(server::probe(), startup::check());
-	let cache = inspect_cache();
+pub async fn run(store: &Store, debug: bool) -> ExitCode {
+	let (server, update, cache) =
+		tokio::join!(server::probe(), startup::check(store), store.inspect());
 	let telemetry = telemetry::snapshot();
 	let mut sections = vec![
 		Section {
@@ -66,7 +62,7 @@ fn health_checks(
 		}
 	};
 	let cache = match cache {
-		CacheInspection::Ready { cache, .. } if cache.is_fresh() => {
+		CacheInspection::Ready { fresh: true, .. } => {
 			Check::new("Series cache", "Fresh", Status::Healthy)
 		}
 		CacheInspection::Ready { .. } => {
@@ -169,12 +165,12 @@ fn debug_checks(
 		));
 	}
 	let (cache_path, cache_detail) = match cache {
-		CacheInspection::Ready { path, cache, .. } => (
+		CacheInspection::Ready { path, age, .. } => (
 			path,
 			format!(
 				"{} old · TTL {}",
-				HumanDuration(cache::age(cache)),
-				HumanDuration(series_cache::MAX_AGE)
+				HumanDuration(*age),
+				HumanDuration(MAX_AGE)
 			),
 		),
 		CacheInspection::Missing(path) => (path, "Missing".into()),

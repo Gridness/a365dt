@@ -1,15 +1,10 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
-	fs, io,
-	path::{Path, PathBuf},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use serde::{Deserialize, Serialize};
-
 use crate::{
 	api::Series,
-	app_files,
 	search::{Search, normalize_query},
 	telemetry::{CatalogueUse, Operation, Recorder},
 };
@@ -18,14 +13,6 @@ pub(crate) const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 type Row = [String; 4];
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-struct PersistedCatalogue {
-	refreshed_at: u64,
-	series: Vec<Series>,
-	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	aliases: BTreeMap<String, u64>,
-}
-
 #[derive(Debug)]
 struct Index {
 	rows: Vec<Row>,
@@ -33,8 +20,10 @@ struct Index {
 }
 
 #[derive(Debug, Default)]
-pub struct Catalogue {
-	persisted: PersistedCatalogue,
+pub(crate) struct Catalogue {
+	pub(super) refreshed_at: u64,
+	pub(super) series: Vec<Series>,
+	pub(super) aliases: BTreeMap<String, u64>,
 	started_with: HashSet<u64>,
 	index: Option<Index>,
 }
@@ -42,14 +31,16 @@ pub struct Catalogue {
 impl Clone for Catalogue {
 	fn clone(&self) -> Self {
 		Self {
-			persisted: self.persisted.clone(),
+			refreshed_at: self.refreshed_at,
+			series: self.series.clone(),
+			aliases: self.aliases.clone(),
 			started_with: self.started_with.clone(),
 			index: None,
 		}
 	}
 }
 
-pub struct Suggestions<'a> {
+pub(crate) struct Suggestions<'a> {
 	series: &'a [Series],
 	rows: &'a [Row],
 	matches: Vec<usize>,
@@ -70,7 +61,7 @@ impl Catalogue {
 			.filter(|series| seen.insert(series.id))
 			.collect();
 		let mut catalogue = Self::new(series);
-		catalogue.persisted.refreshed_at = now();
+		catalogue.refreshed_at = now();
 		catalogue
 	}
 
@@ -79,26 +70,23 @@ impl Catalogue {
 	}
 
 	pub fn is_empty(&self) -> bool {
-		self.persisted.series.is_empty()
+		self.series.is_empty()
 	}
 
 	pub fn len(&self) -> usize {
-		self.persisted.series.len()
+		self.series.len()
 	}
 
 	pub fn refreshed_at(&self) -> u64 {
-		self.persisted.refreshed_at
+		self.refreshed_at
 	}
 
 	pub fn series(&self, row: usize) -> &Series {
-		&self.persisted.series[row]
+		&self.series[row]
 	}
 
 	pub fn row_of(&self, series_id: u64) -> Option<usize> {
-		self.persisted
-			.series
-			.iter()
-			.position(|series| series.id == series_id)
+		self.series.iter().position(|series| series.id == series_id)
 	}
 
 	pub fn suggestions<'a>(
@@ -119,7 +107,7 @@ impl Catalogue {
 			.filter(|index| seen.insert(*index))
 			.collect();
 		Suggestions {
-			series: &self.persisted.series,
+			series: &self.series,
 			rows: &index.rows,
 			matches,
 		}
@@ -148,7 +136,6 @@ impl Catalogue {
 
 	pub fn upsert(&mut self, incoming: Vec<Series>) {
 		let mut positions = self
-			.persisted
 			.series
 			.iter()
 			.enumerate()
@@ -156,10 +143,10 @@ impl Catalogue {
 			.collect::<HashMap<_, _>>();
 		for series in incoming {
 			if let Some(index) = positions.get(&series.id).copied() {
-				self.persisted.series[index] = series;
+				self.series[index] = series;
 			} else {
-				positions.insert(series.id, self.persisted.series.len());
-				self.persisted.series.push(series);
+				positions.insert(series.id, self.series.len());
+				self.series.push(series);
 			}
 		}
 		self.index = None;
@@ -168,15 +155,13 @@ impl Catalogue {
 	pub fn remember_alias(&mut self, query: &str, series_id: u64) {
 		let query = normalize_query(query);
 		if !query.is_empty() {
-			self.persisted.aliases.insert(query, series_id);
+			self.aliases.insert(query, series_id);
 		}
 	}
 
 	pub fn remove_series(&mut self, series_id: u64) {
-		self.persisted
-			.series
-			.retain(|series| series.id != series_id);
-		self.persisted.aliases.retain(|_, id| *id != series_id);
+		self.series.retain(|series| series.id != series_id);
+		self.aliases.retain(|_, id| *id != series_id);
 		self.index = None;
 	}
 
@@ -186,11 +171,10 @@ impl Catalogue {
 		preserved_series: &HashSet<u64>,
 	) {
 		let mut preserved_series = preserved_series.clone();
-		preserved_series.extend(self.persisted.aliases.values().copied());
+		preserved_series.extend(self.aliases.values().copied());
 		let mut ids = refreshed.ids();
-		refreshed.persisted.series.extend(
-			self.persisted
-				.series
+		refreshed.series.extend(
+			self.series
 				.iter()
 				.filter(|series| {
 					preserved_series.contains(&series.id)
@@ -198,12 +182,11 @@ impl Catalogue {
 				})
 				.cloned(),
 		);
-		refreshed
-			.persisted
-			.aliases
-			.clone_from(&self.persisted.aliases);
-		refreshed.persisted.aliases.retain(|_, id| ids.contains(id));
-		self.persisted = refreshed.persisted;
+		refreshed.aliases.clone_from(&self.aliases);
+		refreshed.aliases.retain(|_, id| ids.contains(id));
+		self.refreshed_at = refreshed.refreshed_at;
+		self.series = refreshed.series;
+		self.aliases = refreshed.aliases;
 		self.index = None;
 	}
 
@@ -221,7 +204,6 @@ impl Catalogue {
 		server_matches: &[u64],
 	) -> Vec<usize> {
 		let mut ids = self
-			.persisted
 			.aliases
 			.get(&normalize_query(query))
 			.copied()
@@ -240,7 +222,7 @@ impl Catalogue {
 		if self.index.is_some() {
 			return;
 		}
-		let rows = series_rows(&self.persisted.series);
+		let rows = series_rows(&self.series);
 		let measurement =
 			telemetry.measure_items(Operation::SearchIndex, rows.len());
 		let search = Search::new(&rows);
@@ -249,15 +231,11 @@ impl Catalogue {
 	}
 
 	fn ids(&self) -> HashSet<u64> {
-		self.persisted
-			.series
-			.iter()
-			.map(|series| series.id)
-			.collect()
+		self.series.iter().map(|series| series.id).collect()
 	}
 
 	fn is_fresh_at(&self, now: u64) -> bool {
-		now.saturating_sub(self.persisted.refreshed_at) < MAX_AGE.as_secs()
+		now.saturating_sub(self.refreshed_at) < MAX_AGE.as_secs()
 	}
 }
 
@@ -282,66 +260,26 @@ impl Suggestions<'_> {
 			.collect()
 	}
 
-	pub fn matching_series(&self) -> impl Iterator<Item = &Series> {
-		self.matches.iter().map(|index| &self.series[*index])
-	}
-
 	pub fn series(&self, position: usize) -> Option<&Series> {
 		self.matches.get(position).map(|index| &self.series[*index])
 	}
 }
 
-pub fn load() -> Catalogue {
-	cache_path()
-		.and_then(|path| fs::read(path).ok())
-		.and_then(|contents| decode(&contents).ok())
-		.unwrap_or_default()
-}
-
-pub fn store(catalogue: &Catalogue) {
-	let Some(path) = cache_path() else {
-		return;
-	};
-	let Some(directory) = path.parent() else {
-		return;
-	};
-	let Ok(contents) = encode(catalogue) else {
-		return;
-	};
-	if fs::create_dir_all(directory).is_ok() {
-		let _ = fs::write(path, contents);
+impl Catalogue {
+	pub(super) fn from_parts(
+		refreshed_at: u64,
+		series: Vec<Series>,
+		aliases: BTreeMap<String, u64>,
+	) -> Self {
+		let started_with = series.iter().map(|series| series.id).collect();
+		Self {
+			refreshed_at,
+			series,
+			aliases,
+			started_with,
+			index: None,
+		}
 	}
-}
-
-pub fn prune() -> io::Result<()> {
-	app_files::cache_directory().map_or(Ok(()), |path| prune_directory(&path))
-}
-
-fn prune_directory(path: &Path) -> io::Result<()> {
-	match fs::remove_dir_all(path) {
-		Ok(()) => Ok(()),
-		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(error),
-	}
-}
-
-pub(crate) fn cache_path() -> Option<PathBuf> {
-	app_files::cache_directory().map(|directory| directory.join("series.json"))
-}
-
-pub(crate) fn decode(contents: &[u8]) -> serde_json::Result<Catalogue> {
-	let persisted: PersistedCatalogue = serde_json::from_slice(contents)?;
-	let started_with =
-		persisted.series.iter().map(|series| series.id).collect();
-	Ok(Catalogue {
-		persisted,
-		started_with,
-		index: None,
-	})
-}
-
-fn encode(catalogue: &Catalogue) -> serde_json::Result<Vec<u8>> {
-	serde_json::to_vec(&catalogue.persisted)
 }
 
 fn series_rows(series: &[Series]) -> Vec<Row> {
@@ -371,5 +309,5 @@ fn now() -> u64 {
 }
 
 #[cfg(test)]
-#[path = "series_cache_tests.rs"]
+#[path = "catalogue_tests.rs"]
 mod tests;

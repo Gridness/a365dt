@@ -1,8 +1,8 @@
-use std::{collections::HashSet, fs, process, time::SystemTime};
+use std::collections::HashSet;
 
 use pretty_assertions::assert_eq;
 
-use super::{Catalogue, MAX_AGE, decode, encode, prune_directory};
+use super::{Catalogue, MAX_AGE};
 use crate::{
 	api::Series,
 	telemetry::{CatalogueUse, Recorder},
@@ -25,30 +25,12 @@ fn matching_series(
 	query: &str,
 	server_matches: &[u64],
 ) -> Vec<Series> {
-	catalogue
-		.suggestions(query, server_matches, &Recorder::default())
-		.matching_series()
+	let suggestions =
+		catalogue.suggestions(query, server_matches, &Recorder::default());
+	(0..suggestions.matches().len())
+		.filter_map(|position| suggestions.series(position))
 		.cloned()
 		.collect()
-}
-
-#[test]
-fn serializes_catalogue_without_episode_details() {
-	let expected = series(7, "Магическая битва", 2020);
-	let mut catalogue = Catalogue::refreshed(vec![expected.clone()]);
-	catalogue.remember_alias("jjk", 7);
-	let json = String::from_utf8(encode(&catalogue).unwrap()).unwrap();
-
-	assert!(!json.contains("episodes"));
-	assert!(!json.contains("posterUrlSmall"));
-	let mut decoded = decode(json.as_bytes()).unwrap();
-	assert_eq!(
-		(
-			matching_series(&mut decoded, "", &[]),
-			matching_series(&mut decoded, "jjk", &[]),
-		),
-		(vec![expected.clone()], vec![expected])
-	);
 }
 
 #[test]
@@ -180,23 +162,4 @@ fn ranks_series_and_classifies_catalogue_use_through_the_interface() {
 			[CatalogueUse::Hit, CatalogueUse::Miss],
 		)
 	);
-}
-
-#[test]
-fn prunes_cache_directory_idempotently() {
-	let directory = std::env::temp_dir().join(format!(
-		"a365dt-cache-prune-{}-{}",
-		process::id(),
-		SystemTime::now()
-			.duration_since(SystemTime::UNIX_EPOCH)
-			.unwrap()
-			.as_nanos()
-	));
-	fs::create_dir_all(&directory).unwrap();
-	fs::write(directory.join("series.json"), b"cached").unwrap();
-
-	prune_directory(&directory).unwrap();
-	prune_directory(&directory).unwrap();
-
-	assert!(!directory.exists());
 }

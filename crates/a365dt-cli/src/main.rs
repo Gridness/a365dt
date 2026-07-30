@@ -1,6 +1,7 @@
 mod api;
 mod app_files;
 mod auth;
+mod cache;
 mod command_line;
 mod doctor;
 mod download;
@@ -8,7 +9,6 @@ mod error;
 mod poster;
 mod search;
 mod select;
-mod series_cache;
 mod series_search;
 mod startup;
 mod stats;
@@ -276,22 +276,39 @@ async fn main() -> ExitCode {
 			&mut std::io::stdout(),
 		);
 		Ok(ExitCode::SUCCESS)
-	} else if let Some(Commands::Doctor { .. }) = args.command.as_ref() {
-		Ok(doctor::run(debug).await)
-	} else if let Some(Commands::Stats { .. }) = args.command.as_ref() {
-		stats::run();
-		Ok(ExitCode::SUCCESS)
-	} else if let Some(Commands::Update { .. }) = args.command.as_ref() {
-		startup::check().await.map(|update| {
-			if let Some(update) = update {
-				startup::show_update(&update);
-			} else {
-				ui::success("Already up to date");
-			}
-			ExitCode::SUCCESS
+	} else if matches!(
+		args.command.as_ref(),
+		Some(Commands::Cache {
+			command: CacheCommand::Prune { .. }
 		})
+	) {
+		prune_cache().await
 	} else {
-		run(args, active_download, &telemetry).await
+		let store = cache::Store::open().await;
+		if let Some(error) = store.initialization_warning() {
+			ui::warning(error);
+		}
+		let result = if let Some(Commands::Doctor { .. }) =
+			args.command.as_ref()
+		{
+			Ok(doctor::run(&store, debug).await)
+		} else if let Some(Commands::Stats { .. }) = args.command.as_ref() {
+			stats::run(&store).await;
+			Ok(ExitCode::SUCCESS)
+		} else if let Some(Commands::Update { .. }) = args.command.as_ref() {
+			startup::check(&store).await.map(|update| {
+				if let Some(update) = update {
+					startup::show_update(&update);
+				} else {
+					ui::success("Already up to date");
+				}
+				ExitCode::SUCCESS
+			})
+		} else {
+			run(args, active_download, &store, &telemetry).await
+		};
+		store.close().await;
+		result
 	};
 	let (code, outcome) = match result {
 		Ok(code) if code == ExitCode::SUCCESS => {
@@ -369,23 +386,21 @@ fn cancel_download(
 		.is_some_and(|cancel| cancel.send(true).is_ok())
 }
 
+async fn prune_cache() -> Result<ExitCode, Error> {
+	ui::heading("a365dt  ◆  Anime365 downloader");
+	cache::prune(cache::RebuildPermission::Ask).await?;
+	ui::success("Local cache cleared");
+	Ok(ExitCode::SUCCESS)
+}
+
 async fn run(
 	args: Args,
 	active_download: Arc<Mutex<Option<watch::Sender<bool>>>>,
+	store: &cache::Store,
 	telemetry: &telemetry::Recorder,
 ) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
-	if let Some(Commands::Cache {
-		command: CacheCommand::Prune { .. },
-	}) = args.command
-	{
-		series_cache::prune().map_err(|error| {
-			Error::with_debug("Could not clear the local cache.", error)
-		})?;
-		ui::success("Local cache cleared");
-		return Ok(ExitCode::SUCCESS);
-	}
-	startup::show().await;
+	startup::show(store).await;
 	let access_token = auth::access_token()?;
 	let api =
 		Anime365::new(access_token.value().to_owned(), telemetry.clone())?;
@@ -399,7 +414,7 @@ async fn run(
 	} else {
 		args.forced_query.join(" ")
 	};
-	let selected = series_search::choose(&api, query, telemetry).await?;
+	let selected = series_search::choose(&api, store, query, telemetry).await?;
 	telemetry.record_catalogue(selected.catalogue);
 	let series = selected.series;
 	ui::success(format!("Selected {}", series.title));
