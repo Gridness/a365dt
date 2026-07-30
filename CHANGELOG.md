@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/Gridness/a365dt/compare/v0.11.0...v0.12.0) (2026-07-30)
+
+
+### Features
+
+* **cli:** persist cache state in SQLite ([c131342](https://github.com/Gridness/a365dt/commit/c13134231048eb6d57eaca47597c61dbfc1a0fe1)), closes [#71](https://github.com/Gridness/a365dt/issues/71)
+
+
+### Bug Fixes
+
+* **cli:** harden SQLite cache lifecycle ([b0bade2](https://github.com/Gridness/a365dt/commit/b0bade2469329b50d65dfe5de4895c64b7b864aa))
+
 ## [0.11.0](https://github.com/Gridness/a365dt/compare/v0.10.0...v0.11.0) (2026-07-30)
 
 
