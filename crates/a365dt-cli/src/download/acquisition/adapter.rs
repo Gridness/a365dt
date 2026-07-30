@@ -44,7 +44,7 @@ impl<B> Response<B> {
 ///
 /// Implementations translate external responses without exposing their
 /// client or HTTP body types through the acquisition interface.
-pub(in crate::download) trait Adapter: Sync {
+pub(in crate::download) trait Adapter: Send + Sync {
 	type Body: Send;
 
 	fn send(
@@ -63,17 +63,17 @@ pub(in crate::download) trait Adapter: Sync {
 	) -> impl Future<Output = Result<Embed, Error>> + Send;
 }
 
-pub(in crate::download) struct Anime365Adapter<'a> {
-	api: &'a Anime365,
+pub(in crate::download) struct Anime365Adapter {
+	api: Anime365,
 }
 
-impl<'a> Anime365Adapter<'a> {
-	pub(in crate::download) fn new(api: &'a Anime365) -> Self {
+impl Anime365Adapter {
+	pub(in crate::download) fn new(api: Anime365) -> Self {
 		Self { api }
 	}
 }
 
-impl Adapter for Anime365Adapter<'_> {
+impl Adapter for Anime365Adapter {
 	type Body = reqwest::Response;
 
 	async fn send(

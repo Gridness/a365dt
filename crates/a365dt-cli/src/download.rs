@@ -21,8 +21,7 @@ use crate::{
 	select::PlannedRelease,
 };
 use acquisition::{
-	AcquisitionStatus, Anime365Adapter, TransferMode, acquire, file_len,
-	retry_transfer,
+	AcquisitionStatus, Adapter, Anime365Adapter, acquire, file_len,
 };
 
 #[derive(Clone)]
@@ -41,7 +40,7 @@ pub enum Status {
 	Interrupted,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Outcome {
 	pub episode: String,
 	pub status: Status,
@@ -86,14 +85,31 @@ pub async fn run(
 	jobs: Vec<Job>,
 	concurrency: usize,
 	debug: bool,
+	cancel: watch::Receiver<bool>,
+) -> Summary {
+	let bars = Arc::new(Bars::new(jobs.len() as u64, debug));
+	run_with_adapter(
+		Arc::new(Anime365Adapter::new(api)),
+		jobs,
+		concurrency,
+		bars,
+		cancel,
+	)
+	.await
+}
+
+async fn run_with_adapter<A: Adapter + 'static>(
+	adapter: Arc<A>,
+	jobs: Vec<Job>,
+	concurrency: usize,
+	bars: Arc<Bars>,
 	mut cancel: watch::Receiver<bool>,
 ) -> Summary {
 	let started = Instant::now();
-	let bars = Arc::new(Bars::new(jobs.len() as u64, debug));
 	let mut pending = VecDeque::from(jobs);
 	let mut active = JoinSet::new();
 	for _ in 0..concurrency {
-		spawn_next(&mut active, &mut pending, &api, &bars, &cancel);
+		spawn_next(&mut active, &mut pending, &adapter, &bars, &cancel);
 	}
 	let mut interrupted = false;
 	let mut outcomes = Vec::new();
@@ -117,7 +133,7 @@ pub async fn run(
 				bars.line(&outcome);
 				outcomes.push(outcome);
 				if !interrupted {
-					spawn_next(&mut active, &mut pending, &api, &bars, &cancel);
+					spawn_next(&mut active, &mut pending, &adapter, &bars, &cancel);
 				}
 			}
 			result = cancel.changed(), if !interrupted => {
@@ -147,23 +163,23 @@ pub async fn run(
 	}
 }
 
-fn spawn_next(
+fn spawn_next<A: Adapter + 'static>(
 	active: &mut JoinSet<Outcome>,
 	pending: &mut VecDeque<Job>,
-	api: &Anime365,
+	adapter: &Arc<A>,
 	bars: &Arc<Bars>,
 	cancel: &watch::Receiver<bool>,
 ) {
 	if let Some(job) = pending.pop_front() {
-		let api = api.clone();
+		let adapter = Arc::clone(adapter);
 		let bars = Arc::clone(bars);
 		let cancel = cancel.clone();
-		active.spawn(async move { download_job(api, job, bars, cancel).await });
+		active.spawn(download_job(adapter, job, bars, cancel));
 	}
 }
 
-async fn download_job(
-	api: Anime365,
+async fn download_job<A: Adapter>(
+	adapter: Arc<A>,
 	job: Job,
 	bars: Arc<Bars>,
 	mut cancel: watch::Receiver<bool>,
@@ -173,7 +189,6 @@ async fn download_job(
 	let video = job.directory.join(format!("{stem}.mp4"));
 	let subtitle = job.directory.join(format!("{stem}.ass"));
 	let mkv = job.directory.join(format!("{stem}.mkv"));
-	let adapter = Anime365Adapter::new(&api);
 	if job.mux && mkv.exists() {
 		let _ = fs::remove_file(&video).await;
 		let _ = fs::remove_file(&subtitle).await;
@@ -188,10 +203,15 @@ async fn download_job(
 	let bar =
 		bars.transfer_bar(&format!("{episode} • {}p", job.release.height));
 	let acquisition = match acquire(
-		&adapter,
+		adapter.as_ref(),
 		&job.release,
 		&video,
+		&subtitle,
 		&bar,
+		|| {
+			bar.finish_and_clear();
+			bars.spinner(&format!("{episode} • ASS"))
+		},
 		&mut cancel,
 	)
 	.await
@@ -202,7 +222,7 @@ async fn download_job(
 			return Outcome {
 				episode,
 				status: Status::Failed,
-				bytes: 0,
+				bytes: error.bytes,
 				detail: error.error,
 			};
 		}
@@ -216,48 +236,18 @@ async fn download_job(
 				episode,
 				status: Status::Interrupted,
 				bytes: acquisition.bytes,
-				detail: "Interrupted; the resumable partial file was saved."
-					.into(),
+				detail: if acquisition.has_subtitle_asset {
+					"Subtitle download failed: interrupted".into()
+				} else {
+					"Interrupted; the resumable partial file was saved.".into()
+				},
 			};
 		}
 	};
 	let bytes = acquisition.bytes;
-	let subtitle_url = acquisition.subtitle_url;
+	let has_subtitle_asset = acquisition.has_subtitle_asset;
 	bar.finish_and_clear();
-	let mut subtitle_skipped = true;
-	if let Some(url) = &subtitle_url {
-		let sub_bar = bars.spinner(&format!("{episode} • ASS"));
-		match retry_transfer(
-			&adapter,
-			url,
-			&subtitle,
-			TransferMode::Fresh,
-			&sub_bar,
-			&mut cancel,
-		)
-		.await
-		{
-			Ok(result) => {
-				subtitle_skipped = result.status == AcquisitionStatus::Skipped;
-			}
-			Err(error) => {
-				sub_bar.finish_and_clear();
-				let status = if error.error.message() == "interrupted" {
-					Status::Interrupted
-				} else {
-					Status::Failed
-				};
-				return Outcome {
-					episode,
-					status,
-					bytes,
-					detail: error.error.context("Subtitle download failed"),
-				};
-			}
-		}
-		sub_bar.finish_and_clear();
-	}
-	if job.mux && subtitle_url.is_some() {
+	if job.mux && has_subtitle_asset {
 		let mux_bar = bars.spinner(&format!("{episode} • muxing"));
 		let result = mux::run(&video, &subtitle, &mkv).await;
 		mux_bar.finish_and_clear();
@@ -278,7 +268,7 @@ async fn download_job(
 	}
 	Outcome {
 		episode,
-		status: if video_skipped && subtitle_skipped {
+		status: if video_skipped {
 			Status::Skipped
 		} else {
 			Status::Downloaded

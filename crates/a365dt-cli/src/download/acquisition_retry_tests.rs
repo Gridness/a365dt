@@ -85,19 +85,22 @@ async fn recovers_partial_video_after_network_and_throttling_failures() {
 	);
 }
 
-#[tokio::test]
-async fn interruption_returns_saved_partial_bytes_without_finalizing() {
+#[tokio::test(start_paused = true)]
+async fn video_interruption_returns_saved_bytes_without_requesting_subtitle() {
 	let directory = TestDirectory::new();
 	let (cancel, mut cancellation) = watch::channel(false);
 	let mut video = tagged_response(4, ETAG, [b"go".as_slice()]);
 	video.body.push_back(BodyStep::Cancel(cancel));
 	let adapter = ScriptedAdapter::new([tagged_response(4, ETAG, []), video]);
-	let release = release();
+	let mut release = release();
+	release.subtitle_url = Some(SUBTITLE_URL.into());
 	let result = acquire(
 		&adapter,
 		&release,
 		&directory.path("episode.mp4"),
+		&directory.path("episode.ass"),
 		&ProgressBar::hidden(),
+		ProgressBar::hidden,
 		&mut cancellation,
 	)
 	.await;
@@ -108,7 +111,7 @@ async fn interruption_returns_saved_partial_bytes_without_finalizing() {
 			result: Ok(Acquisition {
 				status: AcquisitionStatus::Interrupted,
 				bytes: 2,
-				subtitle_url: None,
+				has_subtitle_asset: false,
 			}),
 			requests: vec![
 				ObservedRequest::Head(URL.into()),
