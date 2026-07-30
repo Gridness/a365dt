@@ -29,8 +29,8 @@ pub(crate) struct Release {
 }
 
 pub(crate) struct CompletedRelease {
-	release: Release,
-	completed_at_ms: u64,
+	pub(super) release: Release,
+	pub(super) completed_at_ms: u64,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -249,7 +249,11 @@ fn authorize_rebuild(permission: RebuildPermission) -> Result<(), Error> {
 		RebuildPermission::Ask
 			if io::stdin().is_terminal() && io::stdout().is_terminal() =>
 		{
-			if ui::confirm("The local cache is damaged. Rebuild it?", false)? {
+			let rebuild_by_default = false;
+			if ui::confirm(
+				"The local cache is damaged. Rebuild it?",
+				rebuild_by_default,
+			)? {
 				Ok(())
 			} else {
 				Err("Cancelled.".into())

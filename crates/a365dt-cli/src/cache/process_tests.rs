@@ -135,10 +135,22 @@ async fn revision_interleaving() {
 	let mut newest_release = Worker::spawn(RELEASE_WORKER, &directory);
 	first_release.wait_for("OPENED");
 	newest_release.wait_for("OPENED");
-	first_release.send("v1.0.0");
-	first_release.wait_for("SAVED");
-	newest_release.send("v2.0.0");
+	let completed_at_ms = u64::try_from(
+		SystemTime::now()
+			.duration_since(SystemTime::UNIX_EPOCH)
+			.unwrap()
+			.as_millis(),
+	)
+	.unwrap();
+	first_release
+		.send(&format!("v1.0.0 {}", completed_at_ms.saturating_sub(1)));
+	newest_release.send(&format!("v2.0.0 {completed_at_ms}"));
+	first_release.wait_for("COMPLETED");
+	newest_release.wait_for("COMPLETED");
+	newest_release.send("SAVE");
 	newest_release.wait_for("SAVED");
+	first_release.send("SAVE");
+	first_release.wait_for("SAVED");
 	first_release.finish();
 	newest_release.finish();
 
@@ -150,6 +162,21 @@ async fn revision_interleaving() {
 			html_url: "https://example.com/v2.0.0".into(),
 		})
 	);
+	store.close().await;
+
+	let mut stale_after_prune = Worker::spawn(REFRESH_WORKER, &directory);
+	stale_after_prune.wait_for("LOADED");
+	prune_at(&directory, RebuildPermission::Preauthorized)
+		.await
+		.unwrap();
+	stale_after_prune.send("After prune");
+	stale_after_prune.wait_for("REFRESHED");
+	stale_after_prune.finish();
+	let store = Store::at(directory.clone()).await;
+	assert!(matches!(
+		store.inspect().await,
+		super::Inspection::Missing { .. }
+	));
 	store.close().await;
 	fs::remove_dir_all(directory).unwrap();
 }
@@ -176,14 +203,18 @@ async fn worker_stale_delete() {
 async fn worker_release_completion() {
 	let store = Store::at(std::env::current_dir().unwrap()).await;
 	barrier("OPENED");
-	let tag_name = read_input();
-	store
-		.save_release(CompletedRelease::now(Release {
+	let completion = read_input();
+	let (tag_name, completed_at_ms) = completion.split_once(' ').unwrap();
+	let completed = CompletedRelease {
+		release: Release {
+			tag_name: tag_name.into(),
 			html_url: format!("https://example.com/{tag_name}"),
-			tag_name,
-		}))
-		.await
-		.unwrap();
+		},
+		completed_at_ms: completed_at_ms.parse().unwrap(),
+	};
+	barrier("COMPLETED");
+	wait_for_input("SAVE");
+	store.save_release(completed).await.unwrap();
 	barrier("SAVED");
 	store.close().await;
 }
