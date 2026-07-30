@@ -52,7 +52,7 @@ pub(super) async fn save(
 		 tag_name = excluded.tag_name, \
 		 html_url = excluded.html_url, \
 		 completed_at_ms = excluded.completed_at_ms \
-		 WHERE excluded.completed_at_ms >= release.completed_at_ms",
+		 WHERE excluded.completed_at_ms > release.completed_at_ms",
 	)
 	.bind(completed.release.tag_name)
 	.bind(completed.release.html_url)
