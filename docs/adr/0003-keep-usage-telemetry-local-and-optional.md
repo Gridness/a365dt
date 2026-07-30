@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0005
+---
+
 # Keep usage telemetry local and optional
 
 a365dt records only aggregate usage counters, state-change timestamps, and bounded recent latency samples, stores them in OS-specific local paths resolved by `directories`, and never transmits them. Collection is enabled by default but can be inspected, disabled, re-enabled, or cleared independently of the Series cache; observations are buffered in memory and flushed once per completed command so telemetry does not add disk I/O to search or download hot paths. This provides the history shown by `a365dt stats` and the telemetry health checked by `a365dt doctor` while excluding queries, Anime365 identifiers, titles, URLs, paths, tokens, and per-download identities.
