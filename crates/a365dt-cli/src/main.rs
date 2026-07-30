@@ -134,6 +134,10 @@ enum Commands {
 enum CacheCommand {
 	/// Clear the local cache.
 	Prune {
+		/// Rebuild damaged cache storage without confirmation.
+		#[arg(short, long)]
+		yes: bool,
+
 		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
 		query: Vec<String>,
 	},
@@ -276,13 +280,16 @@ async fn main() -> ExitCode {
 			&mut std::io::stdout(),
 		);
 		Ok(ExitCode::SUCCESS)
-	} else if matches!(
-		args.command.as_ref(),
-		Some(Commands::Cache {
-			command: CacheCommand::Prune { .. }
+	} else if let Some(Commands::Cache {
+		command: CacheCommand::Prune { yes, .. },
+	}) = args.command.as_ref()
+	{
+		prune_cache(if *yes {
+			cache::RebuildPermission::Preauthorized
+		} else {
+			cache::RebuildPermission::Ask
 		})
-	) {
-		prune_cache().await
+		.await
 	} else {
 		let store = cache::Store::open().await;
 		if let Some(error) = store.initialization_warning() {
@@ -386,9 +393,11 @@ fn cancel_download(
 		.is_some_and(|cancel| cancel.send(true).is_ok())
 }
 
-async fn prune_cache() -> Result<ExitCode, Error> {
+async fn prune_cache(
+	permission: cache::RebuildPermission,
+) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
-	cache::prune(cache::RebuildPermission::Ask).await?;
+	cache::prune(permission).await?;
 	ui::success("Local cache cleared");
 	Ok(ExitCode::SUCCESS)
 }

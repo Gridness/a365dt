@@ -1,25 +1,28 @@
 use std::{
-	collections::BTreeMap,
-	fs, io,
+	io::{self, IsTerminal},
 	path::{Path, PathBuf},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
-use super::{catalogue::Catalogue, writer::LoadedCatalogue};
-use crate::{api::Series, app_files, error::Error};
+use crate::{app_files, error::Error, ui};
 
-const SERIES_FILE: &str = "series.json";
-const RELEASE_FILE: &str = "latest-release.json";
-const RELEASE_TTL: Duration = Duration::from_secs(10 * 60);
+mod catalogue;
+mod database;
+mod mutations;
+mod release;
+
+use database::Database;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Store {
-	directory: Result<PathBuf, Error>,
+	available: Result<Database, Error>,
+	path: PathBuf,
+	warning: Option<Error>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq)]
 pub(crate) struct Release {
 	pub(crate) tag_name: String,
 	pub(crate) html_url: String,
@@ -46,30 +49,20 @@ pub(crate) enum Inspection {
 		fresh: bool,
 		age: Duration,
 	},
-	Missing(PathBuf),
+	Missing {
+		path: PathBuf,
+		bytes: u64,
+	},
 	Broken {
 		path: PathBuf,
+		bytes: Option<u64>,
 		detail: String,
 	},
 }
 
-#[derive(Default, Deserialize, Serialize)]
-struct ReleaseCache {
-	release: Option<Release>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	completed_at_ms: Option<u64>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct PersistedCatalogue {
-	refreshed_at: u64,
-	series: Vec<Series>,
-	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-	aliases: BTreeMap<String, u64>,
-}
-
 pub(crate) enum RebuildPermission {
 	Ask,
+	Preauthorized,
 }
 
 impl CompletedRelease {
@@ -84,259 +77,217 @@ impl CompletedRelease {
 impl Store {
 	pub(crate) async fn open() -> Self {
 		match app_files::cache_directory() {
-			Some(directory) => Self::at(directory),
-			None => Self {
-				directory: Err(Error::new(
+			Some(directory) => Self::at(directory).await,
+			None => {
+				let error = Error::new(
 					"Could not resolve the user cache directory; check OS configuration.",
-				)),
+				);
+				Self {
+					available: Err(error),
+					path: PathBuf::from("<unresolved>"),
+					warning: None,
+				}
+			}
+		}
+	}
+
+	pub(super) async fn at(directory: PathBuf) -> Self {
+		let path = directory.join(database::FILE);
+		match database::open(&directory).await {
+			Ok(available) => Self {
+				available: Ok(available),
+				path,
+				warning: database::retire_legacy_files(&directory).err(),
+			},
+			Err(failure) => Self {
+				available: Err(failure.error),
+				path,
+				warning: None,
 			},
 		}
 	}
 
-	pub(super) fn at(directory: PathBuf) -> Self {
-		Self {
-			directory: Ok(directory),
-		}
-	}
-
-	pub(crate) async fn load_catalogue(
-		&self,
-	) -> Result<LoadedCatalogue, Error> {
-		let path = match self.path(SERIES_FILE) {
-			Ok(path) => path,
-			Err(_) => return Ok(LoadedCatalogue::unavailable()),
-		};
-		run_blocking(move || read_catalogue(&path))
-			.await
-			.map(LoadedCatalogue::new)
-	}
-
-	pub(super) async fn save_catalogue(
-		&self,
-		catalogue: &Catalogue,
-	) -> Result<(), Error> {
-		let path = self.path(SERIES_FILE)?;
-		let catalogue = catalogue.clone();
-		run_blocking(move || write_catalogue(&path, &catalogue)).await
-	}
-
 	pub(crate) async fn load_release(&self) -> Result<ReleaseState, Error> {
-		let path = match self.path(RELEASE_FILE) {
-			Ok(path) => path,
-			Err(_) => return Ok(ReleaseState::Missing),
+		let Ok(available) = &self.available else {
+			return Ok(ReleaseState::Missing);
 		};
-		run_blocking(move || read_release(&path)).await
+		release::load(&available.pool).await
 	}
 
 	pub(crate) async fn save_release(
 		&self,
-		release: CompletedRelease,
+		completed: CompletedRelease,
 	) -> Result<(), Error> {
-		let path = match self.path(RELEASE_FILE) {
-			Ok(path) => path,
-			Err(_) => return Ok(()),
+		let Ok(available) = &self.available else {
+			return Ok(());
 		};
-		run_blocking(move || write_release(&path, release)).await
+		release::save(&available.pool, completed).await
 	}
 
 	pub(crate) async fn inspect(&self) -> Inspection {
-		let path = match self.path(SERIES_FILE) {
-			Ok(path) => path,
+		let available = match &self.available {
+			Ok(available) => available,
 			Err(error) => {
 				return Inspection::Broken {
-					path: PathBuf::from("<unresolved>"),
-					detail: error.to_string(),
+					path: self.path.clone(),
+					bytes: database::size(&self.path).ok(),
+					detail: error.render(true),
 				};
 			}
 		};
-		let broken_path = path.clone();
-		match run_blocking(move || Ok(inspect_path(path))).await {
+		match inspect(available, &self.path).await {
 			Ok(inspection) => inspection,
 			Err(error) => Inspection::Broken {
-				path: broken_path,
-				detail: error.to_string(),
+				path: self.path.clone(),
+				bytes: database::size(&self.path).ok(),
+				detail: error.render(true),
 			},
 		}
 	}
 
-	pub(crate) async fn close(self) {}
+	pub(crate) async fn close(self) {
+		if let Ok(available) = self.available {
+			available.pool.close().await;
+		}
+	}
 
 	pub(crate) fn initialization_warning(&self) -> Option<Error> {
-		self.directory.as_ref().err().cloned()
-	}
-
-	fn path(&self, file: &str) -> Result<PathBuf, Error> {
-		Ok(self.directory.clone()?.join(file))
+		self.available
+			.as_ref()
+			.err()
+			.cloned()
+			.or_else(|| self.warning.clone())
 	}
 }
 
-pub(crate) async fn prune(_permission: RebuildPermission) -> Result<(), Error> {
-	let Some(path) = app_files::cache_directory() else {
+pub(crate) async fn prune(permission: RebuildPermission) -> Result<(), Error> {
+	let Some(directory) = app_files::cache_directory() else {
 		return Ok(());
 	};
-	run_blocking(move || {
-		prune_directory(&path).map_err(|error| {
-			Error::with_debug("Could not clear the local cache.", error)
-		})
-	})
-	.await
+	prune_at(&directory, permission).await
 }
 
-fn read_catalogue(path: &Path) -> Result<Catalogue, Error> {
-	match fs::read(path) {
-		Ok(contents) => {
-			decode(&contents).map_err(|error| read_error(path, error))
-		}
-		Err(error) if error.kind() == io::ErrorKind::NotFound => {
-			Ok(Catalogue::default())
-		}
-		Err(error) => Err(read_error(path, error)),
-	}
-}
-
-fn write_catalogue(path: &Path, catalogue: &Catalogue) -> Result<(), Error> {
-	let contents =
-		encode(catalogue).map_err(|error| write_error(path, error))?;
-	write(path, &contents)
-}
-
-fn read_release(path: &Path) -> Result<ReleaseState, Error> {
-	let contents = match fs::read(path) {
-		Ok(contents) => contents,
-		Err(error) if error.kind() == io::ErrorKind::NotFound => {
-			return Ok(ReleaseState::Missing);
-		}
-		Err(error) => return Err(read_error(path, error)),
-	};
-	let cache: ReleaseCache = serde_json::from_slice(&contents)
-		.map_err(|error| read_error(path, error))?;
-	let Some(release) = cache.release else {
-		return Ok(ReleaseState::Missing);
-	};
-	let fresh = fs::metadata(path)
-		.and_then(|metadata| metadata.modified())
-		.ok()
-		.and_then(|modified| modified.elapsed().ok())
-		.is_some_and(|age| age < RELEASE_TTL);
-	Ok(if fresh {
-		ReleaseState::Fresh(release)
-	} else {
-		ReleaseState::Stale(release)
-	})
-}
-
-fn write_release(
-	path: &Path,
-	completed_release: CompletedRelease,
+pub(super) async fn prune_at(
+	directory: &Path,
+	permission: RebuildPermission,
 ) -> Result<(), Error> {
-	if let Ok(contents) = fs::read(path)
-		&& let Ok(stored) = serde_json::from_slice::<ReleaseCache>(&contents)
-		&& stored
-			.completed_at_ms
-			.is_some_and(|stored| stored > completed_release.completed_at_ms)
-	{
-		return Ok(());
+	match database::open(directory).await {
+		Ok(available) => {
+			prune_healthy(&available.pool).await?;
+			available.pool.close().await;
+		}
+		Err(failure) if failure.rebuildable => {
+			authorize_rebuild(permission)?;
+			database::rebuild(directory).await?;
+		}
+		Err(failure) => return Err(failure.error),
 	}
-	let contents = serde_json::to_vec(&ReleaseCache {
-		release: Some(completed_release.release),
-		completed_at_ms: Some(completed_release.completed_at_ms),
+	if let Err(error) = database::retire_legacy_files(directory) {
+		ui::warning(error);
+	}
+	Ok(())
+}
+
+async fn inspect(
+	available: &Database,
+	path: &Path,
+) -> Result<Inspection, Error> {
+	let (refreshed_at, series): (Option<i64>, i64) = sqlx::query_as(
+		"SELECT refreshed_at, (SELECT COUNT(*) FROM series) \
+		 FROM catalogue_state WHERE singleton = 1",
+	)
+	.fetch_one(&available.pool)
+	.await
+	.map_err(read_error)?;
+	if series == 0 {
+		return Ok(Inspection::Missing {
+			path: path.to_owned(),
+			bytes: database::size(path)?,
+		});
+	}
+	let refreshed_at =
+		u64_from(refreshed_at.unwrap_or_default(), "refresh time")?;
+	let age = Duration::from_secs(now().saturating_sub(refreshed_at));
+	Ok(Inspection::Ready {
+		path: path.to_owned(),
+		refreshed_at,
+		series: usize::try_from(series).map_err(read_error)?,
+		bytes: database::size(path)?,
+		fresh: age < super::MAX_AGE,
+		age,
 	})
-	.map_err(|error| write_error(path, error))?;
-	write(path, &contents)
 }
 
-fn write(path: &Path, contents: &[u8]) -> Result<(), Error> {
-	let Some(directory) = path.parent() else {
-		return Err(write_error(path, "cache path has no parent directory"));
-	};
-	fs::create_dir_all(directory).map_err(|error| write_error(path, error))?;
-	fs::write(path, contents).map_err(|error| write_error(path, error))
+async fn prune_healthy(pool: &SqlitePool) -> Result<(), Error> {
+	let mut transaction = pool
+		.begin_with("BEGIN IMMEDIATE")
+		.await
+		.map_err(write_error)?;
+	sqlx::query("DELETE FROM series")
+		.execute(&mut *transaction)
+		.await
+		.map_err(write_error)?;
+	sqlx::query("DELETE FROM release")
+		.execute(&mut *transaction)
+		.await
+		.map_err(write_error)?;
+	sqlx::query(
+		"UPDATE catalogue_state SET revision = revision + 1, \
+		 current_generation = current_generation + 1, \
+		 last_refresh_revision = revision + 1, refreshed_at = NULL, \
+		 next_discovery_order = 0 WHERE singleton = 1",
+	)
+	.execute(&mut *transaction)
+	.await
+	.map_err(write_error)?;
+	transaction.commit().await.map_err(write_error)
 }
 
-fn inspect_path(path: PathBuf) -> Inspection {
-	let contents = match fs::read(&path) {
-		Ok(contents) => contents,
-		Err(error) if error.kind() == io::ErrorKind::NotFound => {
-			return Inspection::Missing(path);
+fn authorize_rebuild(permission: RebuildPermission) -> Result<(), Error> {
+	match permission {
+		RebuildPermission::Preauthorized => Ok(()),
+		RebuildPermission::Ask
+			if io::stdin().is_terminal() && io::stdout().is_terminal() =>
+		{
+			let rebuild_by_default = false;
+			if ui::confirm(
+				"The local cache is damaged. Rebuild it?",
+				rebuild_by_default,
+			)? {
+				Ok(())
+			} else {
+				Err("Cancelled.".into())
+			}
 		}
-		Err(error) => {
-			return Inspection::Broken {
-				path,
-				detail: error.to_string(),
-			};
-		}
-	};
-	match decode(&contents) {
-		Ok(catalogue) => Inspection::Ready {
-			path,
-			refreshed_at: catalogue.refreshed_at(),
-			series: catalogue.len(),
-			bytes: u64::try_from(contents.len()).unwrap_or(u64::MAX),
-			fresh: catalogue.is_fresh(),
-			age: Duration::from_secs(
-				now().saturating_sub(catalogue.refreshed_at()),
-			),
-		},
-		Err(error) => Inspection::Broken {
-			path,
-			detail: error.to_string(),
-		},
+		RebuildPermission::Ask => Err(Error::new(
+			"The local cache is damaged; run `a365dt cache prune --yes` to rebuild it.",
+		)),
 	}
 }
 
-fn prune_directory(path: &Path) -> io::Result<()> {
-	match fs::remove_dir_all(path) {
-		Ok(()) => Ok(()),
-		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(error),
-	}
+fn i64_from(value: u64, name: &str) -> Result<i64, Error> {
+	i64::try_from(value).map_err(|error| {
+		write_error(format!("{name} is out of range: {error}"))
+	})
 }
 
-fn decode(contents: &[u8]) -> serde_json::Result<Catalogue> {
-	let persisted = serde_json::from_slice::<PersistedCatalogue>(contents)?;
-	Ok(Catalogue::from_parts(
-		persisted.refreshed_at,
-		persisted.series,
-		persisted.aliases,
-	))
+fn u64_from(value: i64, name: &str) -> Result<u64, Error> {
+	u64::try_from(value)
+		.map_err(|error| read_error(format!("{name} is out of range: {error}")))
 }
 
-fn encode(catalogue: &Catalogue) -> serde_json::Result<Vec<u8>> {
-	let mut persisted = PersistedCatalogue {
-		refreshed_at: catalogue.refreshed_at,
-		series: catalogue.series.clone(),
-		aliases: catalogue.aliases.clone(),
-	};
-	for series in &mut persisted.series {
-		series.poster_url_small = None;
-		series.episodes.clear();
-	}
-	serde_json::to_vec(&persisted)
-}
-
-fn read_error(path: &Path, error: impl std::fmt::Display) -> Error {
+fn read_error(error: impl std::fmt::Display) -> Error {
 	Error::with_debug(
 		"Could not read the local cache; run `a365dt cache prune` to reset it.",
-		format!("{}: {error}", path.display()),
+		error,
 	)
 }
 
-fn write_error(path: &Path, error: impl std::fmt::Display) -> Error {
+fn write_error(error: impl std::fmt::Display) -> Error {
 	Error::with_debug(
 		"Could not update the local cache; run `a365dt cache prune` to reset it.",
-		format!("{}: {error}", path.display()),
+		error,
 	)
-}
-
-async fn run_blocking<T>(
-	task: impl FnOnce() -> Result<T, Error> + Send + 'static,
-) -> Result<T, Error>
-where
-	T: Send + 'static,
-{
-	tokio::task::spawn_blocking(task).await.map_err(|error| {
-		Error::with_debug("A local cache task stopped unexpectedly.", error)
-	})?
 }
 
 fn now() -> u64 {

@@ -12,3 +12,7 @@ pub(crate) use writer::{LoadedCatalogue, Writer};
 #[cfg(test)]
 #[path = "writer_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "process_tests.rs"]
+mod process_tests;

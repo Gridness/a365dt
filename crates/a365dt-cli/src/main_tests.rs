@@ -122,7 +122,7 @@ fn preserves_existing_commands() {
 	assert!(matches!(
 		cache.command,
 		Some(Commands::Cache {
-			command: CacheCommand::Prune { query }
+			command: CacheCommand::Prune { query, .. }
 		})
 			if query.is_empty()
 	));
@@ -142,5 +142,21 @@ fn preserves_existing_commands() {
 	assert!(matches!(
 		update.command,
 		Some(Commands::Update { query }) if query.is_empty()
+	));
+}
+
+#[test]
+fn accepts_preauthorized_cache_rebuilds() {
+	let args =
+		Args::try_parse_from(["a365dt", "cache", "prune", "--yes"]).unwrap();
+
+	assert!(matches!(
+		args.command,
+		Some(Commands::Cache {
+			command: CacheCommand::Prune {
+				yes: true,
+				query,
+			}
+		}) if query.is_empty()
 	));
 }

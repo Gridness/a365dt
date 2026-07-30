@@ -73,14 +73,6 @@ impl Catalogue {
 		self.series.is_empty()
 	}
 
-	pub fn len(&self) -> usize {
-		self.series.len()
-	}
-
-	pub fn refreshed_at(&self) -> u64 {
-		self.refreshed_at
-	}
-
 	pub fn series(&self, row: usize) -> &Series {
 		&self.series[row]
 	}

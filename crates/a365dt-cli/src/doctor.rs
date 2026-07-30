@@ -69,7 +69,7 @@ fn health_checks(
 			Check::new("Series cache", "Stale", Status::Warning)
 				.remedy("Run a title search to refresh it")
 		}
-		CacheInspection::Missing(_) => {
+		CacheInspection::Missing { .. } => {
 			Check::new("Series cache", "Not created yet", Status::Info)
 				.remedy("Run a title search to create it")
 		}
@@ -165,16 +165,31 @@ fn debug_checks(
 		));
 	}
 	let (cache_path, cache_detail) = match cache {
-		CacheInspection::Ready { path, age, .. } => (
+		CacheInspection::Ready {
+			path, age, bytes, ..
+		} => (
 			path,
 			format!(
-				"{} old · TTL {}",
+				"{} old · TTL {} · {}",
 				HumanDuration(*age),
-				HumanDuration(MAX_AGE)
+				HumanDuration(MAX_AGE),
+				HumanBytes(*bytes)
 			),
 		),
-		CacheInspection::Missing(path) => (path, "Missing".into()),
-		CacheInspection::Broken { path, detail } => (path, detail.clone()),
+		CacheInspection::Missing { path, bytes } => {
+			(path, format!("Missing · {}", HumanBytes(*bytes)))
+		}
+		CacheInspection::Broken {
+			path,
+			bytes,
+			detail,
+		} => (
+			path,
+			bytes.as_ref().map_or_else(
+				|| detail.clone(),
+				|bytes| format!("{detail} · {}", HumanBytes(*bytes)),
+			),
+		),
 	};
 	checks.push(Check::new(
 		"Cache path",

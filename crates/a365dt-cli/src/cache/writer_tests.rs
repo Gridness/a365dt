@@ -35,7 +35,7 @@ async fn semantic_writer_drains_every_mutation_before_finishing() {
 			.unwrap()
 			.as_nanos()
 	));
-	let store = Store::at(directory.clone());
+	let store = Store::at(directory.clone()).await;
 	let (mut catalogue, writer) = store
 		.load_catalogue()
 		.await
@@ -72,5 +72,129 @@ async fn semantic_writer_drains_every_mutation_before_finishing() {
 		(vec![refreshed, discovered.clone()], vec![discovered],)
 	);
 
+	store.close().await;
 	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn stale_removal_preserves_a_concurrent_alias_update() {
+	let directory = temporary_directory("revision");
+	let store = Store::at(directory.clone()).await;
+	let (_, seed) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	seed.discover(vec![series(1, "Original")]);
+	seed.finish().await.unwrap();
+
+	let (_, stale) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	let concurrent_store = Store::at(directory.clone()).await;
+	let (_, concurrent) = concurrent_store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&concurrent_store, Recorder::default());
+	let updated = series(1, "Updated");
+	concurrent.remember_alias("known".into(), updated.clone());
+	concurrent.finish().await.unwrap();
+	stale.remove_missing(updated.id);
+	stale.finish().await.unwrap();
+
+	let (mut loaded, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	writer.finish().await.unwrap();
+	assert_eq!(matching_series(&mut loaded, "known"), vec![updated]);
+
+	concurrent_store.close().await;
+	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn refresh_preserves_newer_discoveries_and_newer_refreshes_win() {
+	let directory = temporary_directory("refresh-revision");
+	let store = Store::at(directory.clone()).await;
+	let original = series(1, "Original");
+	let (_, seed) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	seed.commit_refresh(vec![original]);
+	seed.finish().await.unwrap();
+
+	let (_, stale_refresh) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	let concurrent_store = Store::at(directory.clone()).await;
+	let (_, discover) = concurrent_store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&concurrent_store, Recorder::default());
+	let concurrently_updated = series(1, "Concurrent update");
+	let discovered = series(2, "Discovered");
+	discover.discover(vec![concurrently_updated.clone(), discovered.clone()]);
+	discover.finish().await.unwrap();
+	stale_refresh.commit_refresh(vec![series(1, "Stale refresh")]);
+	stale_refresh.finish().await.unwrap();
+	let (mut loaded, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	writer.finish().await.unwrap();
+	assert_eq!(
+		matching_series(&mut loaded, ""),
+		vec![concurrently_updated, discovered]
+	);
+
+	let (_, older_refresh) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	let (_, newer_refresh) = concurrent_store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&concurrent_store, Recorder::default());
+	let newest = series(1, "Newest");
+	newer_refresh.commit_refresh(vec![newest.clone()]);
+	newer_refresh.finish().await.unwrap();
+	older_refresh.commit_refresh(vec![series(1, "Older")]);
+	older_refresh.finish().await.unwrap();
+
+	let (mut loaded, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	writer.finish().await.unwrap();
+	assert_eq!(matching_series(&mut loaded, ""), vec![newest]);
+
+	concurrent_store.close().await;
+	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+fn temporary_directory(name: &str) -> std::path::PathBuf {
+	std::env::temp_dir().join(format!(
+		"a365dt-cache-writer-{name}-{}-{}",
+		process::id(),
+		SystemTime::now()
+			.duration_since(SystemTime::UNIX_EPOCH)
+			.unwrap()
+			.as_nanos()
+	))
 }

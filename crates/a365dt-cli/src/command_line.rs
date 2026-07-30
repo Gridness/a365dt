@@ -52,7 +52,7 @@ pub fn suggestion_message(suggestions: &[String]) -> String {
 fn title_query(args: &Args) -> Option<Vec<String>> {
 	let (command, query) = match &args.command {
 		Some(Commands::Cache {
-			command: CacheCommand::Prune { query },
+			command: CacheCommand::Prune { query, .. },
 		}) if !query.is_empty() => (
 			"cache",
 			std::iter::once("prune".to_owned())

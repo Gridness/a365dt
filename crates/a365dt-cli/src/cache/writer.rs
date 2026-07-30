@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tokio::{
 	sync::mpsc,
@@ -30,8 +30,9 @@ enum Message {
 }
 
 struct State {
-	catalogue: Catalogue,
-	discovered: HashSet<u64>,
+	base_revision: i64,
+	revisions: HashMap<u64, i64>,
+	series: HashSet<u64>,
 }
 
 enum WriterState {
@@ -40,11 +41,16 @@ enum WriterState {
 }
 
 impl LoadedCatalogue {
-	pub(super) fn new(catalogue: Catalogue) -> Self {
+	pub(super) fn new(
+		catalogue: Catalogue,
+		base_revision: i64,
+		revisions: HashMap<u64, i64>,
+	) -> Self {
 		Self {
 			state: WriterState::Available(State {
-				catalogue: catalogue.clone(),
-				discovered: HashSet::new(),
+				base_revision,
+				series: revisions.keys().copied().collect(),
+				revisions,
 			}),
 			catalogue,
 		}
@@ -108,10 +114,10 @@ async fn run(
 	};
 	let mut first_error = None;
 	while let Some(message) = messages.recv().await {
-		state.apply(message);
-		let _measurement = telemetry
-			.measure_items(Operation::CacheStore, state.catalogue.len());
-		if let Err(error) = store.save_catalogue(&state.catalogue).await
+		let _measurement =
+			telemetry.measure_items(Operation::CacheStore, state.series.len());
+		let result = state.apply(message, &store).await;
+		if let Err(error) = result
 			&& first_error.is_none()
 		{
 			first_error = Some(error);
@@ -121,29 +127,60 @@ async fn run(
 }
 
 impl State {
-	fn apply(&mut self, message: Message) {
+	async fn apply(
+		&mut self,
+		message: Message,
+		store: &Store,
+	) -> Result<(), Error> {
 		match message {
 			Message::Discover(series) => {
-				self.discovered
-					.extend(series.iter().map(|series| series.id));
-				self.catalogue.upsert(series);
+				let ids = series
+					.iter()
+					.map(|series| series.id)
+					.collect::<HashSet<_>>();
+				if let Some(revision) = store.discover(series).await? {
+					for id in ids {
+						self.series.insert(id);
+						self.revisions.insert(id, revision);
+					}
+				}
 			}
 			Message::RememberAlias { query, series } => {
-				self.discovered.insert(series.id);
-				self.catalogue.upsert(vec![series.clone()]);
-				self.catalogue.remember_alias(&query, series.id);
+				let id = series.id;
+				if let Some(revision) =
+					store.remember_alias(query, series).await?
+				{
+					self.series.insert(id);
+					self.revisions.insert(id, revision);
+				}
 			}
 			Message::RemoveMissing(series_id) => {
-				self.discovered.remove(&series_id);
-				self.catalogue.remove_series(series_id);
+				store
+					.remove_missing(
+						series_id,
+						self.revisions.get(&series_id).copied(),
+					)
+					.await?;
+				self.series.remove(&series_id);
+				self.revisions.remove(&series_id);
 			}
 			Message::CommitRefresh(series) => {
-				self.catalogue.merge_refresh(
-					Catalogue::refreshed(series),
-					&self.discovered,
-				);
+				let ids = series
+					.iter()
+					.map(|series| series.id)
+					.collect::<HashSet<_>>();
+				if let Some(revision) =
+					store.commit_refresh(series, self.base_revision).await?
+				{
+					self.base_revision = revision;
+					self.series.extend(&ids);
+					for id in self.series.iter().copied() {
+						self.revisions.insert(id, revision);
+					}
+				}
 			}
 		}
+		Ok(())
 	}
 }
 
