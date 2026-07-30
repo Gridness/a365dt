@@ -20,7 +20,10 @@ use crate::{
 	error::Error,
 	select::PlannedRelease,
 };
-use acquisition::{backoff, file_len, retry_transfer, transfer};
+use acquisition::{
+	AcquisitionStatus, Anime365Adapter, TransferMode, acquire, backoff,
+	file_len, retry_transfer,
+};
 
 const RETRIES: usize = 3;
 
@@ -172,6 +175,7 @@ async fn download_job(
 	let video = job.directory.join(format!("{stem}.mp4"));
 	let subtitle = job.directory.join(format!("{stem}.ass"));
 	let mkv = job.directory.join(format!("{stem}.mkv"));
+	let adapter = Anime365Adapter::new(&api);
 	if job.mux && mkv.exists() {
 		let _ = fs::remove_file(&video).await;
 		let _ = fs::remove_file(&subtitle).await;
@@ -206,8 +210,7 @@ async fn download_job(
 				)),
 			}
 		}
-		match transfer(&api, &video_url, &video, true, &bar, &mut cancel).await
-		{
+		match acquire(&adapter, &video_url, &video, &bar, &mut cancel).await {
 			Ok(result) => {
 				video_result = Some(result);
 				break;
@@ -245,16 +248,27 @@ async fn download_job(
 			}
 		}
 	}
-	let (video_skipped, bytes) =
+	let acquisition =
 		video_result.expect("retry loop always returns or succeeds");
+	let video_skipped = acquisition.status == AcquisitionStatus::Skipped;
+	let bytes = acquisition.bytes;
 	bar.finish_and_clear();
 	let mut subtitle_skipped = true;
 	if let Some(url) = &subtitle_url {
 		let sub_bar = bars.spinner(&format!("{episode} • ASS"));
-		match retry_transfer(&api, url, &subtitle, false, &sub_bar, &mut cancel)
-			.await
+		match retry_transfer(
+			&adapter,
+			url,
+			&subtitle,
+			TransferMode::Fresh,
+			&sub_bar,
+			&mut cancel,
+		)
+		.await
 		{
-			Ok((skipped, _)) => subtitle_skipped = skipped,
+			Ok(result) => {
+				subtitle_skipped = result.status == AcquisitionStatus::Skipped;
+			}
 			Err(error) => {
 				sub_bar.finish_and_clear();
 				let status = if error.error.message() == "interrupted" {

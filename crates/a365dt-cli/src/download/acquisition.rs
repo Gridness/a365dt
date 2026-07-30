@@ -5,7 +5,7 @@ use std::{
 };
 
 use indicatif::ProgressBar;
-use reqwest::{Method, Response, StatusCode, header};
+use reqwest::{StatusCode, header};
 use tokio::{
 	fs::{self, OpenOptions},
 	io::AsyncWriteExt,
@@ -14,7 +14,30 @@ use tokio::{
 };
 
 use super::RETRIES;
-use crate::{api::Anime365, error::Error};
+use crate::error::Error;
+
+mod adapter;
+
+pub(super) use adapter::Anime365Adapter;
+use adapter::{Adapter, Request, Response};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AcquisitionStatus {
+	Downloaded,
+	Skipped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Acquisition {
+	pub(super) status: AcquisitionStatus,
+	pub(super) bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TransferMode {
+	Resumable,
+	Fresh,
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct TransferError {
@@ -30,7 +53,10 @@ struct ResumeState {
 }
 
 impl ResumeState {
-	fn from_response(response: &Response, total: Option<u64>) -> Option<Self> {
+	fn from_response<B>(
+		response: &Response<B>,
+		total: Option<u64>,
+	) -> Option<Self> {
 		let validator = response
 			.headers()
 			.get(header::ETAG)
@@ -61,16 +87,26 @@ impl ResumeState {
 	}
 }
 
-pub(super) async fn retry_transfer(
-	api: &Anime365,
+pub(super) async fn acquire<A: Adapter>(
+	adapter: &A,
 	url: &str,
 	path: &Path,
-	resume: bool,
 	bar: &ProgressBar,
 	cancel: &mut watch::Receiver<bool>,
-) -> Result<(bool, u64), TransferError> {
+) -> Result<Acquisition, TransferError> {
+	transfer(adapter, url, path, TransferMode::Resumable, bar, cancel).await
+}
+
+pub(super) async fn retry_transfer<A: Adapter>(
+	adapter: &A,
+	url: &str,
+	path: &Path,
+	mode: TransferMode,
+	bar: &ProgressBar,
+	cancel: &mut watch::Receiver<bool>,
+) -> Result<Acquisition, TransferError> {
 	for attempt in 0..=RETRIES {
-		match transfer(api, url, path, resume, bar, cancel).await {
+		match transfer(adapter, url, path, mode, bar, cancel).await {
 			Ok(result) => return Ok(result),
 			Err(error) if error.retry && attempt < RETRIES => {
 				sleep(error.retry_after.unwrap_or_else(|| backoff(attempt, 0)))
@@ -82,18 +118,18 @@ pub(super) async fn retry_transfer(
 	unreachable!()
 }
 
-pub(super) async fn transfer(
-	api: &Anime365,
+async fn transfer<A: Adapter>(
+	adapter: &A,
 	url: &str,
 	final_path: &Path,
-	resume: bool,
+	mode: TransferMode,
 	bar: &ProgressBar,
 	cancel: &mut watch::Receiver<bool>,
-) -> Result<(bool, u64), TransferError> {
+) -> Result<Acquisition, TransferError> {
 	let part = part_path(final_path);
 	let mut current_state = None;
-	let total = if resume {
-		let head = api.asset(Method::HEAD, url).await.map_err(network)?;
+	let total = if mode == TransferMode::Resumable {
+		let head = adapter.send(Request::Head(url)).await.map_err(network)?;
 		check_status(&head)?;
 		let total = first_nonzero(head.content_length(), bar.length());
 		current_state = ResumeState::from_response(&head, total);
@@ -106,7 +142,10 @@ pub(super) async fn transfer(
 				remove_resume_state(&part).await.map_err(io_error)?;
 				remove_corrupt_backups(final_path).await.map_err(io_error)?;
 				bar.set_position(total);
-				return Ok((true, total));
+				return Ok(Acquisition {
+					status: AcquisitionStatus::Skipped,
+					bytes: total,
+				});
 			}
 		} else {
 			bar.unset_length();
@@ -130,19 +169,24 @@ pub(super) async fn transfer(
 	if total == Some(start) && start > 0 {
 		finalize(&part, final_path).await.map_err(io_error)?;
 		bar.set_position(start);
-		return Ok((false, start));
+		return Ok(Acquisition {
+			status: AcquisitionStatus::Downloaded,
+			bytes: start,
+		});
 	}
 	let mut response = if start > 0 {
-		api.asset_from(
-			url,
-			start,
-			&saved_state
-				.expect("resumed part has matching state")
-				.validator,
-		)
-		.await
+		adapter
+			.send(Request::Resume {
+				url,
+				start,
+				validator: &saved_state
+					.as_ref()
+					.expect("resumed part has matching state")
+					.validator,
+			})
+			.await
 	} else {
-		api.asset(Method::GET, url).await
+		adapter.send(Request::Get(url)).await
 	}
 	.map_err(network)?;
 	check_status(&response)?;
@@ -173,7 +217,7 @@ pub(super) async fn transfer(
 		.open(&part)
 		.await
 		.map_err(io_error)?;
-	if resume && start == 0 {
+	if mode == TransferMode::Resumable && start == 0 {
 		write_resume_state(
 			&part,
 			ResumeState::from_response(&response, total).as_ref(),
@@ -191,12 +235,7 @@ pub(super) async fn transfer(
 					return Err(fatal("interrupted"));
 				}
 			}
-			chunk = response.chunk() => match chunk.map_err(|error| {
-				network(Error::with_debug(
-					"The media download was interrupted by a network error.",
-					error.without_url(),
-				))
-			})? {
+			chunk = adapter.chunk(&mut response.body) => match chunk.map_err(network)? {
 				Some(chunk) => {
 					file.write_all(&chunk).await.map_err(io_error)?;
 					bar.inc(chunk.len() as u64);
@@ -215,10 +254,16 @@ pub(super) async fn transfer(
 		fs::remove_file(&part).await.map_err(io_error)?;
 		remove_corrupt_backups(final_path).await.map_err(io_error)?;
 		bar.set_position(bytes);
-		return Ok((true, bytes));
+		return Ok(Acquisition {
+			status: AcquisitionStatus::Skipped,
+			bytes,
+		});
 	}
 	finalize(&part, final_path).await.map_err(io_error)?;
-	Ok((false, bytes))
+	Ok(Acquisition {
+		status: AcquisitionStatus::Downloaded,
+		bytes,
+	})
 }
 
 async fn protect_mismatch(path: &Path, expected: u64) -> std::io::Result<()> {
@@ -314,7 +359,7 @@ async fn remove_corrupt_backups(path: &Path) -> std::io::Result<()> {
 }
 
 fn validate_content_range(
-	response: &Response,
+	response: &Response<impl Send>,
 	start: u64,
 	total: u64,
 ) -> Result<(), TransferError> {
@@ -337,7 +382,7 @@ fn valid_content_range(value: &str, start: u64, total: u64) -> bool {
 		&& value.ends_with(&format!("/{total}"))
 }
 
-fn check_status(response: &Response) -> Result<(), TransferError> {
+fn check_status(response: &Response<impl Send>) -> Result<(), TransferError> {
 	let status = response.status();
 	if status.is_success() {
 		return Ok(());

@@ -7,6 +7,7 @@ name = "a365dt-cli"
 version = "0.8.1"
 dependencies = [
  "base64",
+ "bytes",
  "clap",
  "clap_complete",
  "console",
