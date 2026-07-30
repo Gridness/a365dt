@@ -144,11 +144,13 @@ fn statistic_checks(
 fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 	match cache {
 		CacheInspection::Ready {
+			path,
 			refreshed_at,
 			series,
 			bytes,
 			..
 		} => vec![
+			Check::new("Cache path", path.display().to_string(), Status::Info),
 			Check::new(
 				"Last cache update",
 				telemetry::format_timestamp(Some(*refreshed_at)),
@@ -160,7 +162,8 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 				Status::Info,
 			),
 		],
-		CacheInspection::Missing { bytes, .. } => vec![
+		CacheInspection::Missing { path, bytes } => vec![
+			Check::new("Cache path", path.display().to_string(), Status::Info),
 			Check::new("Last cache update", "Never", Status::Info)
 				.remedy("Run a title search to create the cache"),
 			Check::new(
@@ -169,11 +172,19 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 				Status::Info,
 			),
 		],
-		CacheInspection::Broken { .. } => vec![
+		CacheInspection::Broken { path, bytes, .. } => vec![
+			Check::new("Cache path", path.display().to_string(), Status::Info),
 			Check::new("Last cache update", "Unavailable", Status::Info)
 				.remedy("Run `a365dt cache prune`"),
-			Check::new("Cached Series", "Unavailable", Status::Info)
-				.remedy("Run `a365dt cache prune`"),
+			Check::new(
+				"Cached Series",
+				bytes.map_or_else(
+					|| "Unavailable".into(),
+					|bytes| format!("Unavailable · {}", HumanBytes(bytes)),
+				),
+				Status::Info,
+			)
+			.remedy("Run `a365dt cache prune`"),
 		],
 	}
 }

@@ -165,18 +165,31 @@ fn debug_checks(
 		));
 	}
 	let (cache_path, cache_detail) = match cache {
-		CacheInspection::Ready { path, age, .. } => (
+		CacheInspection::Ready {
+			path, age, bytes, ..
+		} => (
 			path,
 			format!(
-				"{} old · TTL {}",
+				"{} old · TTL {} · {}",
 				HumanDuration(*age),
-				HumanDuration(MAX_AGE)
+				HumanDuration(MAX_AGE),
+				HumanBytes(*bytes)
 			),
 		),
 		CacheInspection::Missing { path, bytes } => {
 			(path, format!("Missing · {}", HumanBytes(*bytes)))
 		}
-		CacheInspection::Broken { path, detail } => (path, detail.clone()),
+		CacheInspection::Broken {
+			path,
+			bytes,
+			detail,
+		} => (
+			path,
+			bytes.as_ref().map_or_else(
+				|| detail.clone(),
+				|bytes| format!("{detail} · {}", HumanBytes(*bytes)),
+			),
+		),
 	};
 	checks.push(Check::new(
 		"Cache path",

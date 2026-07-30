@@ -55,6 +55,7 @@ fn reports_a_valid_empty_cache_as_zero_series() {
 			bytes: 0,
 		}),
 		vec![
+			Check::new("Cache path", "cache.sqlite", Status::Info),
 			Check::new("Last cache update", "Never", Status::Info)
 				.remedy("Run a title search to create the cache"),
 			Check::new("Cached Series", "0 · 0 B", Status::Info),

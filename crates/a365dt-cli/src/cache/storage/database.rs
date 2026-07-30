@@ -36,6 +36,18 @@ pub(super) struct OpenFailure {
 	pub(super) rebuildable: bool,
 }
 
+#[derive(Clone, Copy)]
+enum OpenMode {
+	Existing,
+	Initialize,
+}
+
+#[derive(Clone, Copy)]
+enum FailureContext {
+	Opening,
+	Schema,
+}
+
 pub(super) async fn open(directory: &Path) -> Result<Database, OpenFailure> {
 	fs::create_dir_all(directory).map_err(|error| OpenFailure {
 		error: Error::with_debug("Could not open the local cache.", error),
@@ -47,25 +59,27 @@ pub(super) async fn open(directory: &Path) -> Result<Database, OpenFailure> {
 			error,
 			rebuildable: false,
 		})?);
+	let _initialization_lock =
+		initialization_lock(directory).map_err(|error| OpenFailure {
+			error,
+			rebuildable: false,
+		})?;
 	if !path.exists() {
-		let _initialization_lock =
-			initialization_lock(directory).map_err(|error| OpenFailure {
-				error,
-				rebuildable: false,
-			})?;
-		if !path.exists() {
-			match open_database(path.clone(), Arc::clone(&cache_lock), true)
-				.await
-			{
-				Ok(database) => database.pool.close().await,
-				Err(failure) => {
-					remove_new_database(&path);
-					return Err(failure);
-				}
+		match open_database(
+			path.clone(),
+			Arc::clone(&cache_lock),
+			OpenMode::Initialize,
+		)
+		.await
+		{
+			Ok(database) => database.pool.close().await,
+			Err(failure) => {
+				remove_new_database(&path);
+				return Err(failure);
 			}
 		}
 	}
-	open_database(path, cache_lock, false).await
+	open_database(path, cache_lock, OpenMode::Existing).await
 }
 
 pub(super) async fn rebuild(directory: &Path) -> Result<(), Error> {
@@ -83,9 +97,10 @@ pub(super) async fn rebuild(directory: &Path) -> Result<(), Error> {
 			}
 		}
 	}
-	let database = open_database(path, Arc::new(cache_lock), true)
-		.await
-		.map_err(|failure| failure.error)?;
+	let database =
+		open_database(path, Arc::new(cache_lock), OpenMode::Initialize)
+			.await
+			.map_err(|failure| failure.error)?;
 	database.pool.close().await;
 	Ok(())
 }
@@ -122,7 +137,7 @@ pub(super) fn size(path: &Path) -> Result<u64, Error> {
 async fn open_database(
 	path: PathBuf,
 	cache_lock: Arc<File>,
-	initialize: bool,
+	mode: OpenMode,
 ) -> Result<Database, OpenFailure> {
 	let mut options = SqliteConnectOptions::new()
 		.filename(&path)
@@ -132,7 +147,7 @@ async fn open_database(
 		.shared_cache(false)
 		.foreign_keys(true)
 		.busy_timeout(TIMEOUT);
-	if initialize {
+	if matches!(mode, OpenMode::Initialize) {
 		options = options.journal_mode(SqliteJournalMode::Wal);
 	}
 	let pool = SqlitePoolOptions::new()
@@ -140,8 +155,12 @@ async fn open_database(
 		.acquire_timeout(TIMEOUT)
 		.connect_with(options)
 		.await
-		.map_err(|error| open_failure(&path, error, false))?;
+		.map_err(|error| open_failure(&path, error, FailureContext::Opening))?;
 	if let Err(failure) = migrate(&pool, &path).await {
+		pool.close().await;
+		return Err(failure);
+	}
+	if let Err(failure) = validate_schema(&pool, &path).await {
 		pool.close().await;
 		return Err(failure);
 	}
@@ -155,7 +174,7 @@ async fn migrate(pool: &SqlitePool, path: &Path) -> Result<(), OpenFailure> {
 	let mut transaction = pool
 		.begin_with("BEGIN IMMEDIATE")
 		.await
-		.map_err(|error| open_failure(path, error, false))?;
+		.map_err(|error| open_failure(path, error, FailureContext::Opening))?;
 	sqlx::raw_sql(
 		"CREATE TABLE IF NOT EXISTS _sqlx_migrations (\
 		 version BIGINT PRIMARY KEY, \
@@ -168,13 +187,13 @@ async fn migrate(pool: &SqlitePool, path: &Path) -> Result<(), OpenFailure> {
 	)
 	.execute(&mut *transaction)
 	.await
-	.map_err(|error| open_failure(path, error, true))?;
+	.map_err(|error| open_failure(path, error, FailureContext::Schema))?;
 	let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
 		"SELECT version, checksum, success FROM _sqlx_migrations",
 	)
 	.fetch_all(&mut *transaction)
 	.await
-	.map_err(|error| open_failure(path, error, true))?
+	.map_err(|error| open_failure(path, error, FailureContext::Schema))?
 	.into_iter()
 	.map(|(version, checksum, success)| (version, (checksum, success)))
 	.collect::<HashMap<_, _>>();
@@ -209,7 +228,9 @@ async fn migrate(pool: &SqlitePool, path: &Path) -> Result<(), OpenFailure> {
 		sqlx::raw_sql(migration.sql.as_str())
 			.execute(&mut *transaction)
 			.await
-			.map_err(|error| open_failure(path, error, true))?;
+			.map_err(|error| {
+				open_failure(path, error, FailureContext::Schema)
+			})?;
 		sqlx::query(
 			"INSERT INTO _sqlx_migrations \
 			 (version, description, success, checksum, execution_time) \
@@ -220,12 +241,33 @@ async fn migrate(pool: &SqlitePool, path: &Path) -> Result<(), OpenFailure> {
 		.bind(migration.checksum.as_ref())
 		.execute(&mut *transaction)
 		.await
-		.map_err(|error| open_failure(path, error, true))?;
+		.map_err(|error| open_failure(path, error, FailureContext::Schema))?;
 	}
 	transaction
 		.commit()
 		.await
-		.map_err(|error| open_failure(path, error, true))
+		.map_err(|error| open_failure(path, error, FailureContext::Schema))
+}
+
+async fn validate_schema(
+	pool: &SqlitePool,
+	path: &Path,
+) -> Result<(), OpenFailure> {
+	let state = sqlx::query(
+		"SELECT revision, current_generation, last_refresh_revision, \
+		 refreshed_at, next_discovery_order, \
+		 (SELECT COUNT(*) FROM series), \
+		 (SELECT COUNT(*) FROM aliases), \
+		 (SELECT COUNT(*) FROM release) \
+		 FROM catalogue_state WHERE singleton = 1",
+	)
+	.fetch_optional(pool)
+	.await
+	.map_err(|error| open_failure(path, error, FailureContext::Schema))?;
+	if state.is_none() {
+		return Err(schema_failure(path, "cache state is missing"));
+	}
+	Ok(())
 }
 
 fn shared_lock(directory: &Path) -> Result<File, Error> {
@@ -297,25 +339,32 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
 fn open_failure(
 	path: &Path,
 	error: sqlx::Error,
-	during_migration: bool,
+	context: FailureContext,
 ) -> OpenFailure {
 	let code = match &error {
-		sqlx::Error::Database(error) => error.code(),
+		sqlx::Error::Database(error) => error
+			.code()
+			.and_then(|code| code.parse::<i32>().ok())
+			.map(primary_result_code),
 		sqlx::Error::Io(_) | _ => None,
 	};
-	let structural = matches!(code.as_deref(), Some("11" | "26"))
-		|| (during_migration
-			&& !matches!(
-				code.as_deref(),
-				Some("5" | "6" | "8" | "10" | "13" | "14")
-			));
 	OpenFailure {
 		error: Error::with_debug(
 			"Could not open the local cache; run `a365dt cache prune` to inspect or reset it.",
 			format!("{}: {error}", path.display()),
 		),
-		rebuildable: structural,
+		rebuildable: is_structural(code, context),
 	}
+}
+
+fn primary_result_code(code: i32) -> i32 {
+	code & 0xff
+}
+
+fn is_structural(code: Option<i32>, context: FailureContext) -> bool {
+	matches!(code, Some(11 | 26))
+		|| (matches!(context, FailureContext::Schema)
+			&& matches!(code, Some(1 | 17 | 19 | 20 | 24)))
 }
 
 fn schema_failure(path: &Path, detail: impl std::fmt::Display) -> OpenFailure {
@@ -334,3 +383,7 @@ fn read_error(error: impl std::fmt::Display) -> Error {
 		error,
 	)
 }
+
+#[cfg(test)]
+#[path = "database_tests.rs"]
+mod tests;

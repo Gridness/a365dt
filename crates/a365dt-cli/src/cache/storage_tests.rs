@@ -38,6 +38,38 @@ fn series(id: u64, title: &str) -> Series {
 }
 
 #[tokio::test]
+async fn configures_the_cache_connection_for_bounded_local_writes() {
+	let directory = temporary_directory("cache-settings");
+	let store = Store::at(directory.clone()).await;
+	let pool = &store.available.as_ref().unwrap().pool;
+
+	assert_eq!(
+		(
+			sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
+				.fetch_one(pool)
+				.await
+				.unwrap(),
+			sqlx::query_scalar::<_, i64>("PRAGMA synchronous")
+				.fetch_one(pool)
+				.await
+				.unwrap(),
+			sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+				.fetch_one(pool)
+				.await
+				.unwrap(),
+			sqlx::query_scalar::<_, i64>("PRAGMA busy_timeout")
+				.fetch_one(pool)
+				.await
+				.unwrap(),
+		),
+		("wal".into(), 1, 1, 5_000)
+	);
+
+	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
 async fn stores_the_catalogue_projection_without_episode_or_poster_details() {
 	let directory = temporary_directory("cache-storage");
 	let store = Store::at(directory.clone()).await;
@@ -196,6 +228,33 @@ async fn damaged_storage_requires_authorization_before_rebuild() {
 		.unwrap_err();
 	assert!(error.to_string().contains("cache prune --yes"));
 	assert_eq!(fs::read(&path).unwrap(), b"damaged");
+
+	prune_at(&directory, RebuildPermission::Preauthorized)
+		.await
+		.unwrap();
+	let store = Store::at(directory.clone()).await;
+	assert!(matches!(
+		store.inspect().await,
+		super::Inspection::Missing { .. }
+	));
+	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn damaged_schema_requires_authorization_before_rebuild() {
+	let directory = temporary_directory("cache-schema-rebuild");
+	let store = Store::at(directory.clone()).await;
+	sqlx::query("DROP TABLE series")
+		.execute(&store.available.as_ref().unwrap().pool)
+		.await
+		.unwrap();
+	store.close().await;
+
+	let error = prune_at(&directory, RebuildPermission::Ask)
+		.await
+		.unwrap_err();
+	assert!(error.to_string().contains("cache prune --yes"));
 
 	prune_at(&directory, RebuildPermission::Preauthorized)
 		.await

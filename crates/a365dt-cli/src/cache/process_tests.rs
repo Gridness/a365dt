@@ -8,12 +8,17 @@ use std::{
 
 use pretty_assertions::assert_eq;
 
-use super::{Catalogue, RebuildPermission, Store, storage::prune_at};
+use super::{
+	Catalogue, CompletedRelease, RebuildPermission, Release, ReleaseState,
+	Store, storage::prune_at,
+};
 use crate::{api::Series, telemetry::Recorder};
 
 const FIRST_OPEN_WORKER: &str =
 	"cache::process_tests::worker_concurrent_first_open";
 const REFRESH_WORKER: &str = "cache::process_tests::worker_stale_refresh";
+const DELETE_WORKER: &str = "cache::process_tests::worker_stale_delete";
+const RELEASE_WORKER: &str = "cache::process_tests::worker_release_completion";
 const LOCK_WORKER: &str = "cache::process_tests::worker_lifecycle_lock";
 
 #[tokio::test]
@@ -41,14 +46,47 @@ async fn concurrent_first_open() {
 
 	first.finish();
 	second.finish();
+	let store = Store::at(directory.clone()).await;
+	assert!(matches!(
+		store.inspect().await,
+		super::Inspection::Missing { .. }
+	));
+	store.close().await;
 	fs::remove_dir_all(directory).unwrap();
 }
 
 async fn revision_interleaving() {
 	let directory = temporary_directory("revision");
 	fs::create_dir_all(&directory).unwrap();
+	let store = Store::at(directory.clone()).await;
+	let (_, seed) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	seed.discover(vec![series(10, "Original")]);
+	seed.finish().await.unwrap();
+	store.close().await;
+
+	let mut deletion = Worker::spawn(DELETE_WORKER, &directory);
+	deletion.wait_for("LOADED");
+	let store = Store::at(directory.clone()).await;
+	let (_, update) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	update.remember_alias("known".into(), series(10, "Updated"));
+	update.finish().await.unwrap();
+	store.close().await;
+	deletion.send("REMOVE");
+	deletion.wait_for("REMOVED");
+	deletion.finish();
+
 	let mut stale = Worker::spawn(REFRESH_WORKER, &directory);
+	let mut older = Worker::spawn(REFRESH_WORKER, &directory);
 	stale.wait_for("LOADED");
+	older.wait_for("LOADED");
 
 	let store = Store::at(directory.clone()).await;
 	let (_, writer) = store
@@ -56,13 +94,19 @@ async fn revision_interleaving() {
 		.await
 		.unwrap()
 		.into_session(&store, Recorder::default());
-	writer.discover(vec![series(2, "Concurrent discovery")]);
+	writer.discover(vec![
+		series(1, "Concurrent update"),
+		series(2, "Concurrent discovery"),
+	]);
 	writer.finish().await.unwrap();
 	store.close().await;
 
-	stale.send("REFRESH");
+	stale.send("Stale refresh");
 	stale.wait_for("REFRESHED");
 	stale.finish();
+	older.send("Older refresh");
+	older.wait_for("REFRESHED");
+	older.finish();
 
 	let store = Store::at(directory.clone()).await;
 	let (mut catalogue, writer) = store
@@ -72,14 +116,121 @@ async fn revision_interleaving() {
 		.into_session(&store, Recorder::default());
 	writer.finish().await.unwrap();
 	assert_eq!(
-		matching_series(&mut catalogue),
-		vec![
-			series(1, "Stale refresh"),
-			series(2, "Concurrent discovery"),
-		]
+		(
+			matching_series(&mut catalogue, ""),
+			matching_series(&mut catalogue, "known"),
+		),
+		(
+			vec![
+				series(1, "Concurrent update"),
+				series(10, "Updated"),
+				series(2, "Concurrent discovery"),
+			],
+			vec![series(10, "Updated")],
+		)
+	);
+	store.close().await;
+
+	let mut first_release = Worker::spawn(RELEASE_WORKER, &directory);
+	let mut newest_release = Worker::spawn(RELEASE_WORKER, &directory);
+	first_release.wait_for("OPENED");
+	newest_release.wait_for("OPENED");
+	first_release.send("v1.0.0");
+	first_release.wait_for("SAVED");
+	newest_release.send("v2.0.0");
+	newest_release.wait_for("SAVED");
+	first_release.finish();
+	newest_release.finish();
+
+	let store = Store::at(directory.clone()).await;
+	assert_eq!(
+		store.load_release().await.unwrap(),
+		ReleaseState::Fresh(Release {
+			tag_name: "v2.0.0".into(),
+			html_url: "https://example.com/v2.0.0".into(),
+		})
 	);
 	store.close().await;
 	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn worker_stale_delete() {
+	let store = Store::at(std::env::current_dir().unwrap()).await;
+	let (_, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	barrier("LOADED");
+	wait_for_input("REMOVE");
+	writer.remove_missing(10);
+	writer.finish().await.unwrap();
+	barrier("REMOVED");
+	store.close().await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn worker_release_completion() {
+	let store = Store::at(std::env::current_dir().unwrap()).await;
+	barrier("OPENED");
+	let tag_name = read_input();
+	store
+		.save_release(CompletedRelease::now(Release {
+			html_url: format!("https://example.com/{tag_name}"),
+			tag_name,
+		}))
+		.await
+		.unwrap();
+	barrier("SAVED");
+	store.close().await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn worker_stale_refresh() {
+	let directory = std::env::current_dir().unwrap();
+	let store = Store::at(directory).await;
+	let (_, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	barrier("LOADED");
+	let title = read_input();
+	writer.commit_refresh(vec![series(1, &title)]);
+	writer.finish().await.unwrap();
+	store.close().await;
+	barrier("REFRESHED");
+}
+
+#[tokio::test]
+#[ignore]
+async fn worker_concurrent_first_open() {
+	wait_for_input("OPEN");
+	let store = Store::at(std::env::current_dir().unwrap()).await;
+	if let Some(error) = store.initialization_warning() {
+		panic!("{}", error.render(true));
+	}
+	barrier("OPENED");
+	store.close().await;
+}
+
+#[test]
+#[ignore]
+fn worker_lifecycle_lock() {
+	let file = OpenOptions::new()
+		.create(true)
+		.truncate(false)
+		.read(true)
+		.write(true)
+		.open(std::env::current_dir().unwrap().join("cache.lock"))
+		.unwrap();
+	file.try_lock_shared().unwrap();
+	barrier("LOCKED");
+	wait_for_input("RELEASE");
 }
 
 async fn lifecycle_rebuild() {
@@ -108,51 +259,6 @@ async fn lifecycle_rebuild() {
 	));
 	store.close().await;
 	fs::remove_dir_all(directory).unwrap();
-}
-
-#[tokio::test]
-#[ignore]
-async fn worker_concurrent_first_open() {
-	wait_for_input("OPEN");
-	let store = Store::at(std::env::current_dir().unwrap()).await;
-	if let Some(error) = store.initialization_warning() {
-		panic!("{}", error.render(true));
-	}
-	barrier("OPENED");
-	store.close().await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn worker_stale_refresh() {
-	let directory = std::env::current_dir().unwrap();
-	let store = Store::at(directory).await;
-	let (_, writer) = store
-		.load_catalogue()
-		.await
-		.unwrap()
-		.into_session(&store, Recorder::default());
-	barrier("LOADED");
-	wait_for_input("REFRESH");
-	writer.commit_refresh(vec![series(1, "Stale refresh")]);
-	writer.finish().await.unwrap();
-	store.close().await;
-	barrier("REFRESHED");
-}
-
-#[test]
-#[ignore]
-fn worker_lifecycle_lock() {
-	let file = OpenOptions::new()
-		.create(true)
-		.truncate(false)
-		.read(true)
-		.write(true)
-		.open(std::env::current_dir().unwrap().join("cache.lock"))
-		.unwrap();
-	file.try_lock_shared().unwrap();
-	barrier("LOCKED");
-	wait_for_input("RELEASE");
 }
 
 struct Worker {
@@ -209,9 +315,13 @@ impl Worker {
 }
 
 fn wait_for_input(expected: &str) {
+	assert_eq!(read_input(), expected);
+}
+
+fn read_input() -> String {
 	let mut line = String::new();
 	std::io::stdin().read_line(&mut line).unwrap();
-	assert_eq!(line.trim(), expected);
+	line.trim().into()
 }
 
 fn barrier(token: &str) {
@@ -219,8 +329,8 @@ fn barrier(token: &str) {
 	std::io::stdout().flush().unwrap();
 }
 
-fn matching_series(catalogue: &mut Catalogue) -> Vec<Series> {
-	let suggestions = catalogue.suggestions("", &[], &Recorder::default());
+fn matching_series(catalogue: &mut Catalogue, query: &str) -> Vec<Series> {
+	let suggestions = catalogue.suggestions(query, &[], &Recorder::default());
 	(0..suggestions.matches().len())
 		.filter_map(|position| suggestions.series(position))
 		.cloned()
