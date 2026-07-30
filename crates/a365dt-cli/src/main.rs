@@ -115,6 +115,12 @@ enum Commands {
 		#[command(subcommand)]
 		command: TelemetryCommand,
 	},
+
+	/// Check whether a newer stable a365dt release is available.
+	Update {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
+	},
 }
 
 #[derive(Subcommand)]
@@ -265,6 +271,15 @@ async fn main() -> ExitCode {
 		Ok(ExitCode::SUCCESS)
 	} else if let Some(Commands::Doctor { .. }) = args.command.as_ref() {
 		Ok(doctor::run(debug).await)
+	} else if let Some(Commands::Update { .. }) = args.command.as_ref() {
+		startup::check().await.map(|update| {
+			if let Some(update) = update {
+				startup::show_update(&update);
+			} else {
+				ui::success("Already up to date");
+			}
+			ExitCode::SUCCESS
+		})
 	} else {
 		run(args, active_download, &telemetry).await
 	};
@@ -328,6 +343,7 @@ fn telemetry_command(args: &Args) -> telemetry::Command {
 		Some(Commands::Telemetry { .. }) => {
 			unreachable!("telemetry commands return before recording")
 		}
+		Some(Commands::Update { .. }) => telemetry::Command::Update,
 		None => telemetry::Command::Download,
 	}
 }

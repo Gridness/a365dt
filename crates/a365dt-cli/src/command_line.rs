@@ -105,6 +105,9 @@ fn title_query(args: &Args) -> Option<Vec<String>> {
 		Some(Commands::Telemetry {
 			command: TelemetryCommand::Query(query),
 		}) => ("telemetry", query.clone()),
+		Some(Commands::Update { query }) if !query.is_empty() => {
+			("update", query.clone())
+		}
 		_ => return None,
 	};
 	Some(std::iter::once(command.to_owned()).chain(query).collect())

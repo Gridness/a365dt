@@ -13,6 +13,7 @@ fn suggests_likely_command_and_subcommand_typos() {
 		(&["a365dt", "cache", "prne"][..], "cache prune"),
 		(&["a365dt", "doctro"][..], "doctor"),
 		(&["a365dt", "purg"][..], "purge"),
+		(&["a365dt", "udpate"][..], "update"),
 	] {
 		let args = Args::try_parse_from(arguments.iter().copied()).unwrap();
 
@@ -26,6 +27,7 @@ fn keeps_unrelated_words_and_forced_queries_as_title_searches() {
 		&["a365dt", "telemetry", "this"][..],
 		&["a365dt", "cache", "this"][..],
 		&["a365dt", "show", "telemetry"][..],
+		&["a365dt", "update", "this"][..],
 		&["a365dt", "--query", "telemtry show"][..],
 	] {
 		let args = Args::try_parse_from(arguments.iter().copied()).unwrap();

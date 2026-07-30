@@ -38,6 +38,7 @@ pub enum Command {
 	TelemetryDisable,
 	TelemetryEnable,
 	TelemetryShow,
+	Update,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +137,7 @@ impl Command {
 			Self::TelemetryDisable => "telemetry disable",
 			Self::TelemetryEnable => "telemetry enable",
 			Self::TelemetryShow => "telemetry show",
+			Self::Update => "update",
 		}
 	}
 }

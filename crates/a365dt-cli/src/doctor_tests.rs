@@ -1,7 +1,10 @@
 use pretty_assertions::assert_eq;
+use semver::Version;
 
-use super::{Aggregate, Check, Report, Section, Status, aggregate};
-use crate::telemetry::PerformanceMetric;
+use super::{
+	Aggregate, Check, Report, Section, Status, aggregate, version_check,
+};
+use crate::{error::Error, startup::Update, telemetry::PerformanceMetric};
 
 #[test]
 fn aggregates_matching_operation_totals_and_recent_samples() {
@@ -56,4 +59,36 @@ fn reports_the_worst_health_status() {
 	};
 
 	assert_eq!(report.status(), Status::Error);
+}
+
+#[test]
+fn reports_current_available_and_unknown_versions() {
+	let installed = env!("CARGO_PKG_VERSION");
+
+	assert_eq!(
+		[
+			version_check(&Ok(None)),
+			version_check(&Ok(Some(Update {
+				installed: Version::new(0, 9, 0),
+				available: Version::new(0, 10, 0),
+				release_url: "https://example.com/release".into(),
+			}))),
+			version_check(&Err(Error::new("unavailable"))),
+		],
+		[
+			Check::new(
+				"Version",
+				format!("{installed} · up to date"),
+				Status::Healthy,
+			),
+			Check::new("Version", "0.9.0 → 0.10.0 available", Status::Warning,)
+				.remedy("Run `a365dt update`"),
+			Check::new(
+				"Version",
+				format!("{installed} · update check unavailable"),
+				Status::Warning,
+			)
+			.remedy("Check the network or GitHub status, then retry"),
+		]
+	);
 }

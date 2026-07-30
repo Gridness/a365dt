@@ -36,14 +36,34 @@ fn finds_only_strictly_newer_stable_releases() {
 			update_from("0.6.3", release("v0.7.0-beta.1")),
 		],
 		[
-			Some(Update {
+			Ok(Some(Update {
 				installed: Version::new(0, 6, 3),
 				available: Version::new(0, 7, 0),
 				release_url: "https://example.com/release".to_owned(),
-			}),
-			None,
-			None,
-			None,
+			})),
+			Ok(None),
+			Ok(None),
+			Ok(None),
+		]
+	);
+}
+
+#[test]
+fn rejects_versions_that_cannot_be_compared() {
+	let release = |tag_name: &str| Release {
+		tag_name: tag_name.to_owned(),
+		html_url: "https://example.com/release".to_owned(),
+	};
+
+	assert_eq!(
+		[
+			update_from("development", release("v0.7.0")),
+			update_from("0.6.3", release("latest")),
+		]
+		.map(|result| result.map_err(|error| error.message().to_owned())),
+		[
+			Err("Could not check for updates.".to_owned()),
+			Err("Could not check for updates.".to_owned()),
 		]
 	);
 }
