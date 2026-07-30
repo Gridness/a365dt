@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/Gridness/a365dt/compare/v0.9.0...v0.10.0) (2026-07-30)
+
+
+### Features
+
+* **cli:** add explicit update checks ([#57](https://github.com/Gridness/a365dt/issues/57)) ([970c4be](https://github.com/Gridness/a365dt/commit/970c4be10266f173a6d1e957e3ac78693ff5fd89))
+
 ## [0.9.0](https://github.com/Gridness/a365dt/compare/v0.8.1...v0.9.0) (2026-07-30)
 
 
