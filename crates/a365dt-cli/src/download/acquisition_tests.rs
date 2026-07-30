@@ -8,16 +8,18 @@ use std::{
 use bytes::Bytes;
 use indicatif::ProgressBar;
 use pretty_assertions::assert_eq;
-use reqwest::{StatusCode, header::HeaderMap};
+use reqwest::{
+	StatusCode,
+	header::{self, HeaderMap, HeaderValue},
+};
 use tokio::sync::watch;
 
 use super::adapter::{Adapter, Request, Response};
-use super::{
-	Acquisition, AcquisitionStatus, ResumeState, acquire, finalize,
-	first_nonzero, part_path, protect_mismatch, resume_start, retryable,
-	valid_content_range, verified_size,
-};
+use super::{Acquisition, AcquisitionStatus, TransferError, acquire};
 use crate::error::Error;
+
+const URL: &str = "https://media.test/episode.mp4";
+const ETAG: &str = "\"asset\"";
 
 type Body = VecDeque<Result<Bytes, Error>>;
 
@@ -107,6 +109,10 @@ impl TestDirectory {
 		std::fs::create_dir(&path).unwrap();
 		Self(path)
 	}
+
+	fn path(&self, name: &str) -> PathBuf {
+		self.0.join(name)
+	}
 }
 
 impl Drop for TestDirectory {
@@ -117,29 +123,106 @@ impl Drop for TestDirectory {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Observation {
-	acquisition: Acquisition,
+	result: Result<Acquisition, TransferError>,
 	requests: Vec<ObservedRequest>,
 	files: Vec<(String, Vec<u8>)>,
 }
 
-fn response(
+fn body(chunks: impl IntoIterator<Item = &'static [u8]>) -> Body {
+	chunks
+		.into_iter()
+		.map(|chunk| Ok(Bytes::from_static(chunk)))
+		.collect()
+}
+
+fn known_response(
 	content_length: u64,
-	body: impl IntoIterator<Item = &'static [u8]>,
+	chunks: impl IntoIterator<Item = &'static [u8]>,
 ) -> Response<Body> {
 	Response {
 		status: StatusCode::OK,
 		headers: HeaderMap::new(),
 		content_length: Some(content_length),
-		body: body
-			.into_iter()
-			.map(|chunk| Ok(Bytes::from_static(chunk)))
-			.collect(),
+		body: body(chunks),
 	}
+}
+
+fn unknown_response(
+	chunks: impl IntoIterator<Item = &'static [u8]>,
+) -> Response<Body> {
+	Response {
+		status: StatusCode::OK,
+		headers: HeaderMap::new(),
+		content_length: None,
+		body: body(chunks),
+	}
+}
+
+fn tagged_response(
+	content_length: u64,
+	validator: &'static str,
+	chunks: impl IntoIterator<Item = &'static [u8]>,
+) -> Response<Body> {
+	let mut response = known_response(content_length, chunks);
+	response
+		.headers
+		.insert(header::ETAG, HeaderValue::from_static(validator));
+	response
+}
+
+fn partial_response(
+	content_range: &'static str,
+	chunks: impl IntoIterator<Item = &'static [u8]>,
+) -> Response<Body> {
+	let mut headers = HeaderMap::new();
+	headers.insert(
+		header::CONTENT_RANGE,
+		HeaderValue::from_static(content_range),
+	);
+	Response {
+		status: StatusCode::PARTIAL_CONTENT,
+		headers,
+		content_length: None,
+		body: body(chunks),
+	}
+}
+
+async fn write_partial(
+	directory: &TestDirectory,
+	bytes: &[u8],
+	total: u64,
+	validator: &str,
+) {
+	tokio::fs::write(directory.path("episode.mp4.part"), bytes)
+		.await
+		.unwrap();
+	tokio::fs::write(
+		directory.path("episode.mp4.part.state"),
+		format!("{total}\n{validator}"),
+	)
+	.await
+	.unwrap();
+}
+
+async fn acquire_and_observe(
+	directory: &TestDirectory,
+	adapter: &ScriptedAdapter,
+) -> Observation {
+	let (_cancel_tx, mut cancel) = watch::channel(false);
+	let result = acquire(
+		adapter,
+		URL,
+		&directory.path("episode.mp4"),
+		&ProgressBar::hidden(),
+		&mut cancel,
+	)
+	.await;
+	observe(&directory.0, result, adapter).await
 }
 
 async fn observe(
 	directory: &Path,
-	acquisition: Acquisition,
+	result: Result<Acquisition, TransferError>,
 	adapter: &ScriptedAdapter,
 ) -> Observation {
 	let mut entries = tokio::fs::read_dir(directory).await.unwrap();
@@ -152,42 +235,34 @@ async fn observe(
 	}
 	files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 	Observation {
-		acquisition,
+		result,
 		requests: adapter.requests(),
 		files,
 	}
 }
 
+fn downloaded(bytes: u64) -> Result<Acquisition, TransferError> {
+	Ok(Acquisition {
+		status: AcquisitionStatus::Downloaded,
+		bytes,
+	})
+}
+
 #[tokio::test]
 async fn acquires_and_finalizes_new_video() {
 	let directory = TestDirectory::new();
-	let final_path = directory.0.join("episode.mp4");
 	let adapter = ScriptedAdapter::new([
-		response(4, []),
-		response(4, [b"good".as_slice()]),
+		known_response(4, []),
+		known_response(4, [b"good".as_slice()]),
 	]);
-	let (_cancel_tx, mut cancel) = watch::channel(false);
-
-	let acquisition = acquire(
-		&adapter,
-		"https://media.test/episode.mp4",
-		&final_path,
-		&ProgressBar::hidden(),
-		&mut cancel,
-	)
-	.await
-	.unwrap();
 
 	assert_eq!(
-		observe(&directory.0, acquisition, &adapter).await,
+		acquire_and_observe(&directory, &adapter).await,
 		Observation {
-			acquisition: Acquisition {
-				status: AcquisitionStatus::Downloaded,
-				bytes: 4,
-			},
+			result: downloaded(4),
 			requests: vec![
-				ObservedRequest::Head("https://media.test/episode.mp4".into()),
-				ObservedRequest::Get("https://media.test/episode.mp4".into()),
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Get(URL.into()),
 			],
 			files: vec![("episode.mp4".into(), b"good".to_vec())],
 		}
@@ -197,113 +272,266 @@ async fn acquires_and_finalizes_new_video() {
 #[tokio::test]
 async fn skips_matching_final_video_without_requesting_its_body() {
 	let directory = TestDirectory::new();
-	let final_path = directory.0.join("episode.mp4");
-	tokio::fs::write(&final_path, b"good").await.unwrap();
-	let adapter = ScriptedAdapter::new([response(4, [])]);
-	let (_cancel_tx, mut cancel) = watch::channel(false);
-
-	let acquisition = acquire(
-		&adapter,
-		"https://media.test/episode.mp4",
-		&final_path,
-		&ProgressBar::hidden(),
-		&mut cancel,
-	)
-	.await
-	.unwrap();
+	tokio::fs::write(directory.path("episode.mp4"), b"good")
+		.await
+		.unwrap();
+	let adapter = ScriptedAdapter::new([known_response(4, [])]);
 
 	assert_eq!(
-		observe(&directory.0, acquisition, &adapter).await,
+		acquire_and_observe(&directory, &adapter).await,
 		Observation {
-			acquisition: Acquisition {
+			result: Ok(Acquisition {
 				status: AcquisitionStatus::Skipped,
 				bytes: 4,
-			},
-			requests: vec![ObservedRequest::Head(
-				"https://media.test/episode.mp4".into()
-			)],
+			}),
+			requests: vec![ObservedRequest::Head(URL.into())],
 			files: vec![("episode.mp4".into(), b"good".to_vec())],
 		}
 	);
 }
 
-#[test]
-fn validates_resumed_content_range() {
-	assert_eq!(valid_content_range("bytes 50-99/100", 50, 100), true);
-	assert_eq!(valid_content_range("bytes 0-99/100", 50, 100), false);
-	assert_eq!(valid_content_range("bytes 50-99/101", 50, 100), false);
-}
-
-#[test]
-fn resumes_only_when_the_partial_file_belongs_to_the_current_asset() {
-	let old = ResumeState {
-		total: 100,
-		validator: "old".into(),
-	};
-	let current = ResumeState {
-		total: 100,
-		validator: "current".into(),
-	};
+#[tokio::test]
+async fn resumes_matching_partial_video_and_finalizes_it() {
+	let directory = TestDirectory::new();
+	write_partial(&directory, b"go", 4, ETAG).await;
+	let adapter = ScriptedAdapter::new([
+		tagged_response(4, ETAG, []),
+		partial_response("bytes 2-3/4", [b"od".as_slice()]),
+	]);
 
 	assert_eq!(
-		[
-			resume_start(50, Some(100), Some(&current), Some(&current)),
-			resume_start(50, Some(100), Some(&old), Some(&current)),
-			resume_start(50, Some(100), None, Some(&current)),
-			resume_start(101, Some(100), Some(&current), Some(&current)),
-		],
-		[50, 0, 0, 0]
+		acquire_and_observe(&directory, &adapter).await,
+		Observation {
+			result: downloaded(4),
+			requests: vec![
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Resume {
+					url: URL.into(),
+					start: 2,
+					validator: ETAG.into(),
+				},
+			],
+			files: vec![("episode.mp4".into(), b"good".to_vec())],
+		}
 	);
 }
 
-#[test]
-fn accepts_transfer_without_declared_size() {
-	assert_eq!(verified_size(None, 42).unwrap(), 42);
+async fn restarted_partial_observation(
+	bytes: &[u8],
+	total: u64,
+	saved_validator: &str,
+	head: Response<Body>,
+	get_validator: &'static str,
+) -> Observation {
+	let directory = TestDirectory::new();
+	write_partial(&directory, bytes, total, saved_validator).await;
+	let adapter = ScriptedAdapter::new([
+		head,
+		tagged_response(4, get_validator, [b"good".as_slice()]),
+	]);
+	acquire_and_observe(&directory, &adapter).await
 }
 
-#[test]
-fn preserves_known_size_when_retry_reports_zero() {
-	assert_eq!(
-		[
-			first_nonzero(Some(200), Some(100)),
-			first_nonzero(Some(0), Some(100)),
-			first_nonzero(None, Some(100)),
-			first_nonzero(Some(0), None),
-			first_nonzero(None, None),
+#[tokio::test]
+async fn restarts_partial_video_when_it_cannot_be_resumed_safely() {
+	let observations = [
+		restarted_partial_observation(
+			b"go",
+			4,
+			"\"old\"",
+			tagged_response(4, "\"new\"", []),
+			"\"new\"",
+		)
+		.await,
+		restarted_partial_observation(
+			b"go",
+			4,
+			ETAG,
+			known_response(4, []),
+			ETAG,
+		)
+		.await,
+		restarted_partial_observation(
+			b"stale",
+			4,
+			ETAG,
+			tagged_response(4, ETAG, []),
+			ETAG,
+		)
+		.await,
+	];
+	let expected = || Observation {
+		result: downloaded(4),
+		requests: vec![
+			ObservedRequest::Head(URL.into()),
+			ObservedRequest::Get(URL.into()),
 		],
-		[Some(200), Some(100), Some(100), None, None]
-	);
+		files: vec![("episode.mp4".into(), b"good".to_vec())],
+	};
+
+	assert_eq!(observations, [expected(), expected(), expected()]);
 }
 
-#[test]
-fn rejects_empty_transfer_with_relevant_error() {
+async fn invalid_range_observation(content_range: &'static str) -> Observation {
+	let directory = TestDirectory::new();
+	write_partial(&directory, b"go", 4, ETAG).await;
+	let adapter = ScriptedAdapter::new([
+		tagged_response(4, ETAG, []),
+		partial_response(content_range, [b"od".as_slice()]),
+	]);
+	acquire_and_observe(&directory, &adapter).await
+}
+
+#[tokio::test]
+async fn rejects_invalid_resume_start_or_total_without_changing_partial() {
+	for content_range in ["bytes 0-3/4", "bytes 2-3/5"] {
+		assert_eq!(
+			invalid_range_observation(content_range).await,
+			Observation {
+				result: Err(TransferError {
+					error: Error::with_debug(
+						"The media server returned invalid resume information.",
+						format!("invalid Content-Range: {content_range}"),
+					),
+					retry: false,
+					retry_after: None,
+				}),
+				requests: vec![
+					ObservedRequest::Head(URL.into()),
+					ObservedRequest::Resume {
+						url: URL.into(),
+						start: 2,
+						validator: ETAG.into(),
+					},
+				],
+				files: vec![
+					("episode.mp4.part".into(), b"go".to_vec()),
+					(
+						"episode.mp4.part.state".into(),
+						format!("4\n{ETAG}").into_bytes(),
+					),
+				],
+			}
+		);
+	}
+}
+
+#[tokio::test]
+async fn restarts_from_zero_when_server_ignores_resume_request() {
+	let directory = TestDirectory::new();
+	write_partial(&directory, b"go", 4, ETAG).await;
+	let adapter = ScriptedAdapter::new([
+		tagged_response(4, ETAG, []),
+		tagged_response(4, ETAG, [b"good".as_slice()]),
+	]);
+
 	assert_eq!(
-		verified_size(Some(0), 0).unwrap_err(),
-		retryable("The media server returned an empty file.", None)
+		acquire_and_observe(&directory, &adapter).await,
+		Observation {
+			result: downloaded(4),
+			requests: vec![
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Resume {
+					url: URL.into(),
+					start: 2,
+					validator: ETAG.into(),
+				},
+			],
+			files: vec![("episode.mp4".into(), b"good".to_vec())],
+		}
 	);
 }
 
 #[tokio::test]
-async fn replaces_mismatched_file_and_cleans_backup() {
-	let unique = format!(
-		"a365dt-test-{}-{}",
-		std::process::id(),
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.unwrap()
-			.as_nanos()
+async fn finalizes_complete_partial_without_requesting_body() {
+	let directory = TestDirectory::new();
+	write_partial(&directory, b"good", 4, ETAG).await;
+	let adapter = ScriptedAdapter::new([tagged_response(4, ETAG, [])]);
+
+	assert_eq!(
+		acquire_and_observe(&directory, &adapter).await,
+		Observation {
+			result: downloaded(4),
+			requests: vec![ObservedRequest::Head(URL.into())],
+			files: vec![("episode.mp4".into(), b"good".to_vec())],
+		}
 	);
-	let directory = std::env::temp_dir().join(unique);
-	tokio::fs::create_dir(&directory).await.unwrap();
-	let final_path = directory.join("episode.mp4");
-	tokio::fs::write(&final_path, b"bad").await.unwrap();
+}
 
-	protect_mismatch(&final_path, 4).await.unwrap();
-	let part = part_path(&final_path);
-	tokio::fs::write(&part, b"good").await.unwrap();
-	finalize(&part, &final_path).await.unwrap();
+#[tokio::test]
+async fn accepts_nonempty_video_without_declared_total() {
+	let directory = TestDirectory::new();
+	let adapter = ScriptedAdapter::new([
+		unknown_response([]),
+		unknown_response([b"good".as_slice()]),
+	]);
 
-	assert_eq!(tokio::fs::read(&final_path).await.unwrap(), b"good");
-	assert_eq!(directory.join("episode.mp4.corrupt").exists(), false);
-	tokio::fs::remove_dir_all(directory).await.unwrap();
+	assert_eq!(
+		acquire_and_observe(&directory, &adapter).await,
+		Observation {
+			result: downloaded(4),
+			requests: vec![
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Get(URL.into()),
+			],
+			files: vec![("episode.mp4".into(), b"good".to_vec())],
+		}
+	);
+}
+
+#[tokio::test]
+async fn keeps_resumable_state_when_video_does_not_match_known_total() {
+	let directory = TestDirectory::new();
+	let adapter = ScriptedAdapter::new([
+		tagged_response(4, ETAG, []),
+		tagged_response(4, ETAG, [b"bad".as_slice()]),
+	]);
+
+	assert_eq!(
+		acquire_and_observe(&directory, &adapter).await,
+		Observation {
+			result: Err(TransferError {
+				error: Error::new(
+					"The downloaded file was incomplete (3 of 4 bytes).",
+				),
+				retry: true,
+				retry_after: None,
+			}),
+			requests: vec![
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Get(URL.into()),
+			],
+			files: vec![
+				("episode.mp4.part".into(), b"bad".to_vec()),
+				(
+					"episode.mp4.part.state".into(),
+					format!("4\n{ETAG}").into_bytes(),
+				),
+			],
+		}
+	);
+}
+
+#[tokio::test]
+async fn replaces_mismatched_final_video_and_removes_backup() {
+	let directory = TestDirectory::new();
+	tokio::fs::write(directory.path("episode.mp4"), b"bad")
+		.await
+		.unwrap();
+	let adapter = ScriptedAdapter::new([
+		tagged_response(4, ETAG, []),
+		tagged_response(4, ETAG, [b"good".as_slice()]),
+	]);
+
+	assert_eq!(
+		acquire_and_observe(&directory, &adapter).await,
+		Observation {
+			result: downloaded(4),
+			requests: vec![
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Get(URL.into()),
+			],
+			files: vec![("episode.mp4".into(), b"good".to_vec())],
+		}
+	);
 }
