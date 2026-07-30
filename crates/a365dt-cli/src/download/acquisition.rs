@@ -18,8 +18,8 @@ use crate::error::Error;
 mod adapter;
 mod episode;
 
-pub(super) use adapter::Anime365Adapter;
-use adapter::{Adapter, Request, Response};
+pub(in crate::download) use adapter::{Adapter, Anime365Adapter};
+use adapter::{Request, Response};
 pub(super) use episode::acquire;
 
 const RETRIES: usize = 3;
@@ -35,20 +35,21 @@ pub(super) enum AcquisitionStatus {
 pub(super) struct Acquisition {
 	pub(super) status: AcquisitionStatus,
 	pub(super) bytes: u64,
-	pub(super) subtitle_url: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TransferMode {
-	Resumable,
-	Fresh,
+	pub(super) has_subtitle_asset: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct TransferError {
 	pub(super) error: Error,
+	pub(super) bytes: u64,
 	pub(super) retry: bool,
 	pub(super) retry_after: Option<Duration>,
+}
+
+impl TransferError {
+	fn is_interrupted(&self) -> bool {
+		self.error.message() == "interrupted"
+	}
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -92,16 +93,15 @@ impl ResumeState {
 	}
 }
 
-pub(super) async fn retry_transfer<A: Adapter>(
+async fn retry_transfer<A: Adapter>(
 	adapter: &A,
 	url: &str,
 	path: &Path,
-	mode: TransferMode,
 	bar: &ProgressBar,
 	cancel: &mut watch::Receiver<bool>,
 ) -> Result<Acquisition, TransferError> {
 	for attempt in 0..=RETRIES {
-		match transfer(adapter, url, path, mode, bar, cancel).await {
+		match transfer(adapter, url, path, bar, cancel).await {
 			Ok(result) => return Ok(result),
 			Err(error) if error.retry && attempt < RETRIES => {
 				sleep(error.retry_after.unwrap_or_else(|| backoff(attempt, 0)))
@@ -117,39 +117,32 @@ async fn transfer<A: Adapter>(
 	adapter: &A,
 	url: &str,
 	final_path: &Path,
-	mode: TransferMode,
 	bar: &ProgressBar,
 	cancel: &mut watch::Receiver<bool>,
 ) -> Result<Acquisition, TransferError> {
 	let part = part_path(final_path);
-	let mut current_state = None;
-	let total = if mode == TransferMode::Resumable {
-		let head = adapter.send(Request::Head(url)).await.map_err(network)?;
-		check_status(&head)?;
-		let total = first_nonzero(head.content_length(), bar.length());
-		current_state = ResumeState::from_response(&head, total);
-		if let Some(total) = total {
-			bar.set_length(total);
-			protect_mismatch(final_path, total)
-				.await
-				.map_err(io_error)?;
-			if final_path.exists() {
-				remove_resume_state(&part).await.map_err(io_error)?;
-				remove_corrupt_backups(final_path).await.map_err(io_error)?;
-				bar.set_position(total);
-				return Ok(Acquisition {
-					status: AcquisitionStatus::Skipped,
-					bytes: total,
-					subtitle_url: None,
-				});
-			}
-		} else {
-			bar.unset_length();
+	let head = adapter.send(Request::Head(url)).await.map_err(network)?;
+	check_status(&head)?;
+	let total = first_nonzero(head.content_length(), bar.length());
+	let current_state = ResumeState::from_response(&head, total);
+	if let Some(total) = total {
+		bar.set_length(total);
+		protect_mismatch(final_path, total)
+			.await
+			.map_err(io_error)?;
+		if final_path.exists() {
+			remove_resume_state(&part).await.map_err(io_error)?;
+			remove_corrupt_backups(final_path).await.map_err(io_error)?;
+			bar.set_position(total);
+			return Ok(Acquisition {
+				status: AcquisitionStatus::Skipped,
+				bytes: total,
+				has_subtitle_asset: false,
+			});
 		}
-		total
 	} else {
-		None
-	};
+		bar.unset_length();
+	}
 	let part_len = file_len(&part).await;
 	let saved_state = if part_len > 0 {
 		read_resume_state(&part).await.map_err(io_error)?
@@ -168,7 +161,7 @@ async fn transfer<A: Adapter>(
 		return Ok(Acquisition {
 			status: AcquisitionStatus::Downloaded,
 			bytes: start,
-			subtitle_url: None,
+			has_subtitle_asset: false,
 		});
 	}
 	let mut response = if start > 0 {
@@ -214,7 +207,7 @@ async fn transfer<A: Adapter>(
 		.open(&part)
 		.await
 		.map_err(io_error)?;
-	if mode == TransferMode::Resumable && start == 0 {
+	if start == 0 {
 		write_resume_state(
 			&part,
 			ResumeState::from_response(&response, total).as_ref(),
@@ -254,14 +247,14 @@ async fn transfer<A: Adapter>(
 		return Ok(Acquisition {
 			status: AcquisitionStatus::Skipped,
 			bytes,
-			subtitle_url: None,
+			has_subtitle_asset: false,
 		});
 	}
 	finalize(&part, final_path).await.map_err(io_error)?;
 	Ok(Acquisition {
 		status: AcquisitionStatus::Downloaded,
 		bytes,
-		subtitle_url: None,
+		has_subtitle_asset: false,
 	})
 }
 
@@ -399,6 +392,7 @@ fn check_status(response: &Response<impl Send>) -> Result<(), TransferError> {
 		error: Error::new(format!(
 			"The media server rejected the download (HTTP {status})."
 		)),
+		bytes: 0,
 		retry,
 		retry_after: delay,
 	})
@@ -445,6 +439,7 @@ fn io_error(error: std::io::Error) -> TransferError {
 fn fatal(error: impl Into<Error>) -> TransferError {
 	TransferError {
 		error: error.into(),
+		bytes: 0,
 		retry: false,
 		retry_after: None,
 	}
@@ -455,6 +450,7 @@ fn retryable(
 ) -> TransferError {
 	TransferError {
 		error: error.into(),
+		bytes: 0,
 		retry: true,
 		retry_after,
 	}

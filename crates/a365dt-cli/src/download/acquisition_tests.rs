@@ -15,6 +15,7 @@ use reqwest::{
 };
 use tokio::{sync::watch, time::Instant};
 
+use super::super::{Bars, Job, Outcome, Status, run_with_adapter};
 use super::adapter::{Adapter, Request, Response};
 use super::{Acquisition, AcquisitionStatus, TransferError, acquire};
 use crate::{
@@ -24,8 +25,10 @@ use crate::{
 };
 
 const URL: &str = "https://media.test/episode.mp4";
+const SUBTITLE_URL: &str = "https://media.test/episode.ass";
 const REFRESHED_URL: &str = "https://media.test/refreshed.mp4";
 const ETAG: &str = "\"asset\"";
+const SUBTITLE_ETAG: &str = "\"subtitle\"";
 
 enum BodyStep {
 	Chunk(Bytes),
@@ -154,12 +157,13 @@ struct TestDirectory(PathBuf);
 impl TestDirectory {
 	fn new() -> Self {
 		let unique = format!(
-			"a365dt-test-{}-{}",
+			"a365dt-test-{}-{}-{:?}",
 			std::process::id(),
 			SystemTime::now()
 				.duration_since(UNIX_EPOCH)
 				.unwrap()
-				.as_nanos()
+				.as_nanos(),
+			std::thread::current().id(),
 		);
 		let path = std::env::temp_dir().join(unique);
 		std::fs::create_dir(&path).unwrap();
@@ -284,7 +288,9 @@ async fn acquire_and_observe(
 		adapter,
 		&release,
 		&directory.path("episode.mp4"),
+		&directory.path("episode.ass"),
 		&ProgressBar::hidden(),
+		ProgressBar::hidden,
 		&mut cancel,
 	)
 	.await;
@@ -316,7 +322,7 @@ fn downloaded(bytes: u64) -> Result<Acquisition, TransferError> {
 	Ok(Acquisition {
 		status: AcquisitionStatus::Downloaded,
 		bytes,
-		subtitle_url: None,
+		has_subtitle_asset: false,
 	})
 }
 
@@ -363,6 +369,7 @@ fn failed(
 	Observation {
 		result: Err(TransferError {
 			error: Error::new(message),
+			bytes: 0,
 			retry: true,
 			retry_after: None,
 		}),
@@ -412,7 +419,7 @@ async fn skips_matching_final_video_without_requesting_its_body() {
 			result: Ok(Acquisition {
 				status: AcquisitionStatus::Skipped,
 				bytes: 4,
-				subtitle_url: None,
+				has_subtitle_asset: false,
 			}),
 			requests: vec![ObservedRequest::Head(URL.into())],
 			files: vec![("episode.mp4".into(), b"good".to_vec())],
@@ -523,6 +530,7 @@ async fn rejects_invalid_resume_start_or_total_without_changing_partial() {
 						"The media server returned invalid resume information.",
 						format!("invalid Content-Range: {content_range}"),
 					),
+					bytes: 0,
 					retry: false,
 					retry_after: None,
 				}),
@@ -671,3 +679,6 @@ async fn replaces_mismatched_final_video_and_removes_backup() {
 
 #[path = "acquisition_retry_tests.rs"]
 mod retry_tests;
+
+#[path = "acquisition_subtitle_tests.rs"]
+mod subtitle_tests;
