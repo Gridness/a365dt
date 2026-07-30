@@ -3,7 +3,10 @@ use std::future::Future;
 use bytes::Bytes;
 use reqwest::{Method, StatusCode, header::HeaderMap};
 
-use crate::{api::Anime365, error::Error};
+use crate::{
+	api::{Anime365, Embed},
+	error::Error,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::download) enum Request<'a> {
@@ -37,8 +40,10 @@ impl<B> Response<B> {
 	}
 }
 
-/// Supplies media responses to acquisition without exposing the Anime365
-/// client or its HTTP response type to the acquisition interface.
+/// Supplies refreshed Anime365 media and asset responses to acquisition.
+///
+/// Implementations translate external responses without exposing their
+/// client or HTTP body types through the acquisition interface.
 pub(in crate::download) trait Adapter: Sync {
 	type Body: Send;
 
@@ -51,6 +56,11 @@ pub(in crate::download) trait Adapter: Sync {
 		&self,
 		body: &mut Self::Body,
 	) -> impl Future<Output = Result<Option<Bytes>, Error>> + Send;
+
+	fn refresh(
+		&self,
+		translation_id: u64,
+	) -> impl Future<Output = Result<Embed, Error>> + Send;
 }
 
 pub(in crate::download) struct Anime365Adapter<'a> {
@@ -97,5 +107,9 @@ impl Adapter for Anime365Adapter<'_> {
 				error.without_url(),
 			)
 		})
+	}
+
+	async fn refresh(&self, translation_id: u64) -> Result<Embed, Error> {
+		self.api.embed(translation_id).await
 	}
 }

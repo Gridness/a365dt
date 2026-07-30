@@ -10,7 +10,7 @@ use console::style;
 use indicatif::{
 	MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
 };
-use tokio::{fs, sync::watch, task::JoinSet, time::sleep};
+use tokio::{fs, sync::watch, task::JoinSet};
 
 mod acquisition;
 mod mux;
@@ -21,11 +21,9 @@ use crate::{
 	select::PlannedRelease,
 };
 use acquisition::{
-	AcquisitionStatus, Anime365Adapter, TransferMode, acquire, backoff,
-	file_len, retry_transfer,
+	AcquisitionStatus, Anime365Adapter, TransferMode, acquire, file_len,
+	retry_transfer,
 };
-
-const RETRIES: usize = 3;
 
 #[derive(Clone)]
 pub struct Job {
@@ -189,69 +187,42 @@ async fn download_job(
 	}
 	let bar =
 		bars.transfer_bar(&format!("{episode} • {}p", job.release.height));
-	let mut video_url = job.release.media_url.clone();
-	let mut subtitle_url = job.release.subtitle_url.clone();
-	let mut video_result = None;
-	for attempt in 0..=RETRIES {
-		if attempt > 0 {
-			match api.embed(job.release.translation.id).await {
-				Ok(embed) => {
-					video_url = embed
-						.download
-						.into_iter()
-						.find(|item| item.height == job.release.height)
-						.and_then(|item| item.url)
-						.unwrap_or(video_url);
-					subtitle_url = embed.subtitles_url.or(subtitle_url);
-				}
-				Err(error) => bar.set_message(format!(
-					"{episode} • refresh failed: {}",
-					error.render(bars.debug)
-				)),
-			}
+	let acquisition = match acquire(
+		&adapter,
+		&job.release,
+		&video,
+		&bar,
+		&mut cancel,
+	)
+	.await
+	{
+		Ok(acquisition) => acquisition,
+		Err(error) => {
+			bar.finish_and_clear();
+			return Outcome {
+				episode,
+				status: Status::Failed,
+				bytes: 0,
+				detail: error.error,
+			};
 		}
-		match acquire(&adapter, &video_url, &video, &bar, &mut cancel).await {
-			Ok(result) => {
-				video_result = Some(result);
-				break;
-			}
-			Err(error) if error.error.message() == "interrupted" => {
-				bar.finish_and_clear();
-				return Outcome {
-					episode,
-					status: Status::Interrupted,
-					bytes: file_len(&video).await,
-					detail:
-						"Interrupted; the resumable partial file was saved."
-							.into(),
-				};
-			}
-			Err(error) if error.retry && attempt < RETRIES => {
-				bar.set_message(format!(
-					"{episode} • retry {}/{}",
-					attempt + 1,
-					RETRIES
-				));
-				sleep(error.retry_after.unwrap_or_else(|| {
-					backoff(attempt, job.release.episode.id)
-				}))
-				.await;
-			}
-			Err(error) => {
-				bar.finish_and_clear();
-				return Outcome {
-					episode,
-					status: Status::Failed,
-					bytes: 0,
-					detail: error.error,
-				};
-			}
+	};
+	let video_skipped = match acquisition.status {
+		AcquisitionStatus::Downloaded => false,
+		AcquisitionStatus::Skipped => true,
+		AcquisitionStatus::Interrupted => {
+			bar.finish_and_clear();
+			return Outcome {
+				episode,
+				status: Status::Interrupted,
+				bytes: acquisition.bytes,
+				detail: "Interrupted; the resumable partial file was saved."
+					.into(),
+			};
 		}
-	}
-	let acquisition =
-		video_result.expect("retry loop always returns or succeeds");
-	let video_skipped = acquisition.status == AcquisitionStatus::Skipped;
+	};
 	let bytes = acquisition.bytes;
+	let subtitle_url = acquisition.subtitle_url;
 	bar.finish_and_clear();
 	let mut subtitle_skipped = true;
 	if let Some(url) = &subtitle_url {
