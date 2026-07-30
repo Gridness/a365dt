@@ -1,6 +1,5 @@
 use std::{
 	collections::hash_map::RandomState,
-	fs,
 	hash::BuildHasher,
 	io::{self, IsTerminal},
 	path::{Path, PathBuf},
@@ -11,24 +10,25 @@ use std::{
 use console::{Style, style};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use semver::Version;
-use serde::{Deserialize, Serialize};
 
-use crate::{app_files, error::Error};
+use crate::{
+	cache::{CompletedRelease, Release, ReleaseState, Store},
+	error::Error,
+	ui,
+};
 
 const TIPS: &str = include_str!("../tips.txt");
 const LATEST_RELEASE_URL: &str =
 	"https://api.github.com/repos/Gridness/a365dt/releases/latest";
-const CACHE_FILE: &str = "latest-release.json";
-const CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const CHECK_FAILURE: &str = "Could not check for updates.";
 
-pub async fn show() {
+pub async fn show(store: &Store) {
 	if !io::stdout().is_terminal() {
 		return;
 	}
 
-	let update = cached_update().await;
+	let update = cached_update(store).await;
 	println!();
 	if let Some(update) = update {
 		show_update(&update);
@@ -40,52 +40,51 @@ pub async fn show() {
 	}
 }
 
-pub async fn check() -> Result<Option<Update>, Error> {
+pub async fn check(store: &Store) -> Result<Option<Update>, Error> {
 	let (release, update) = fetch_update().await?;
-	if let Some(cache_path) = cache_path() {
-		write_cache(
-			&cache_path,
-			&CacheContents {
-				release: Some(release),
-			},
-		);
+	if let Err(error) = store.save_release(release).await {
+		ui::warning(error);
 	}
 	Ok(update)
 }
 
-async fn cached_update() -> Option<Update> {
-	let Some(cache_path) = cache_path() else {
-		return fetch_update().await.ok()?.1;
-	};
-	match read_cache(&cache_path) {
-		Cache::Fresh(contents) => update_from_cache(contents),
-		Cache::Stale(contents) => refresh_update(&cache_path, contents).await,
-		Cache::Missing => {
-			refresh_update(&cache_path, CacheContents::default()).await
+async fn cached_update(store: &Store) -> Option<Update> {
+	match store.load_release().await {
+		Ok(ReleaseState::Fresh(release)) => update_from_release(release),
+		Ok(ReleaseState::Stale(release)) => {
+			refresh_update(store, ReleaseFallback::Stale(release)).await
+		}
+		Ok(ReleaseState::Missing) => {
+			refresh_update(store, ReleaseFallback::Missing).await
+		}
+		Err(error) => {
+			ui::warning(error);
+			fetch_update().await.ok()?.1
 		}
 	}
 }
 
 async fn refresh_update(
-	cache_path: &Path,
-	cached: CacheContents,
+	store: &Store,
+	fallback: ReleaseFallback,
 ) -> Option<Update> {
 	let Ok((release, update)) = fetch_update().await else {
-		return update_from_cache(cached);
+		return match fallback {
+			ReleaseFallback::Stale(release) => update_from_release(release),
+			ReleaseFallback::Missing => None,
+		};
 	};
-	write_cache(
-		cache_path,
-		&CacheContents {
-			release: Some(release),
-		},
-	);
+	if let Err(error) = store.save_release(release).await {
+		ui::warning(error);
+	}
 	update
 }
 
-async fn fetch_update() -> Result<(Release, Option<Update>), Error> {
+async fn fetch_update() -> Result<(CompletedRelease, Option<Update>), Error> {
 	let release = fetch_release().await?;
+	let completed = CompletedRelease::now(release.clone());
 	let update = available_update(release.clone())?;
-	Ok((release, update))
+	Ok((completed, update))
 }
 
 async fn fetch_release() -> Result<Release, Error> {
@@ -112,47 +111,13 @@ fn check_error(error: impl std::fmt::Display) -> Error {
 	Error::with_debug(CHECK_FAILURE, error)
 }
 
-fn cache_path() -> Option<PathBuf> {
-	app_files::cache_directory().map(|directory| directory.join(CACHE_FILE))
+fn update_from_release(release: Release) -> Option<Update> {
+	available_update(release).ok().flatten()
 }
 
-fn read_cache(path: &Path) -> Cache {
-	let Some(contents) = fs::read(path)
-		.ok()
-		.and_then(|contents| serde_json::from_slice(&contents).ok())
-	else {
-		return Cache::Missing;
-	};
-	let fresh = fs::metadata(path)
-		.and_then(|metadata| metadata.modified())
-		.ok()
-		.and_then(|modified| modified.elapsed().ok())
-		.is_some_and(|age| age < CACHE_TTL);
-	if fresh {
-		Cache::Fresh(contents)
-	} else {
-		Cache::Stale(contents)
-	}
-}
-
-fn write_cache(path: &Path, cache: &CacheContents) {
-	let Some(contents) = serde_json::to_vec(cache).ok() else {
-		return;
-	};
-	let Some(directory) = path.parent() else {
-		return;
-	};
-	if fs::create_dir_all(directory).is_ok() {
-		// ponytail: a torn cache only skips one notice; use atomic replacement
-		// if this cache ever becomes consequential.
-		let _ = fs::write(path, contents);
-	}
-}
-
-fn update_from_cache(contents: CacheContents) -> Option<Update> {
-	contents
-		.release
-		.and_then(|release| available_update(release).ok().flatten())
+enum ReleaseFallback {
+	Stale(Release),
+	Missing,
 }
 
 fn available_update(release: Release) -> Result<Option<Update>, Error> {
@@ -384,23 +349,6 @@ fn push_markdown_text(
 		markdown_style = markdown_style.blue().underlined();
 	}
 	output.push_str(&markdown_style.apply_to(text).to_string());
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct Release {
-	tag_name: String,
-	html_url: String,
-}
-
-#[derive(Default, Deserialize, Serialize)]
-struct CacheContents {
-	release: Option<Release>,
-}
-
-enum Cache {
-	Fresh(CacheContents),
-	Stale(CacheContents),
-	Missing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

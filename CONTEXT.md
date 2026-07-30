@@ -8,6 +8,10 @@ a365dt downloads user-selected Anime365 releases while keeping episode and trans
 An a365dt run in which a person searches for a Series and makes download choices. Help, version reporting, shell-completion generation, and maintenance commands are not Interactive sessions.
 _Avoid_: Launch, invocation
 
+**Invocation**:
+One execution of a365dt, including Interactive sessions and non-interactive or maintenance commands. Telemetry events from the same Invocation share an Invocation ID.
+_Avoid_: Session, launch
+
 **Tip**:
 A short, single-line piece of a365dt guidance shown at the beginning of an Interactive session. Its source text is Markdown.
 _Avoid_: Hint, startup message
@@ -15,6 +19,10 @@ _Avoid_: Hint, startup message
 **Available update**:
 A published stable a365dt release whose version is semantically higher than the running version.
 _Avoid_: Latest version, new version
+
+**Telemetry event**:
+An immutable, timestamped local observation of a365dt usage or performance. It may identify a selected Series by title and Anime365 Series ID, but never records search text, remote candidates, URLs, tokens, or file paths.
+_Avoid_: Counter, metric snapshot
 
 **Installation channel**:
 The distribution route through which the running a365dt executable was installed: Homebrew, WinGet, Cargo, or manual when no managed route can be identified.

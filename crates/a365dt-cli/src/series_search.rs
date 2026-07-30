@@ -16,8 +16,8 @@ use crate::{
 		Anime365, Result as ApiResult, SERIES_PAGE_SIZE, Series,
 		series_id_from_url,
 	},
+	cache::{Catalogue, LoadedCatalogue, Store, Writer},
 	error::Error,
-	series_cache::{self, Catalogue},
 	telemetry::{CatalogueUse, Operation, Recorder},
 	ui::{self, selector},
 };
@@ -34,6 +34,7 @@ pub struct Selection {
 
 pub async fn choose(
 	api: &Anime365,
+	store: &Store,
 	prefill: String,
 	telemetry: &Recorder,
 ) -> Result<Selection, Error> {
@@ -43,23 +44,32 @@ pub async fn choose(
 			catalogue: CatalogueUse::Bypassed,
 		});
 	}
-	let cache_telemetry = telemetry.clone();
-	let cache = tokio::task::spawn_blocking(move || {
-		let _measurement = cache_telemetry.measure(Operation::CacheRetrieve);
-		series_cache::load()
-	})
-	.await
-	.unwrap_or_default();
-	if selector::interactive_terminal() {
-		choose_interactive(api, cache, prefill, telemetry).await
+	let measurement = telemetry.measure(Operation::CacheRetrieve);
+	let loaded = store.load_catalogue().await;
+	drop(measurement);
+	let loaded = match loaded {
+		Ok(loaded) => loaded,
+		Err(error) => {
+			ui::warning(error);
+			LoadedCatalogue::unavailable()
+		}
+	};
+	let (catalogue, writer) = loaded.into_session(store, telemetry.clone());
+	let result = if selector::interactive_terminal() {
+		choose_interactive(api, catalogue, &writer, prefill, telemetry).await
 	} else {
-		choose_line(api, cache, prefill, telemetry).await
+		choose_line(api, catalogue, &writer, prefill, telemetry).await
+	};
+	if let Err(error) = writer.finish().await {
+		ui::warning(error);
 	}
+	result
 }
 
 async fn choose_line(
 	api: &Anime365,
 	mut catalogue: Catalogue,
+	writer: &Writer,
 	mut query: String,
 	telemetry: &Recorder,
 ) -> Result<Selection, Error> {
@@ -80,8 +90,8 @@ async fn choose_line(
 			exact_ids.extend(results.exact.iter().map(|series| series.id));
 			let mut incoming = results.exact;
 			incoming.extend(results.fallback);
+			writer.discover(incoming.clone());
 			catalogue.upsert(incoming);
-			store(catalogue.clone(), telemetry).await;
 		}
 		Err(error) if !local_available => return Err(error),
 		Err(_) => {}
@@ -99,7 +109,7 @@ async fn choose_line(
 		Some(series) => {
 			if exact_ids.contains(&selected.id) {
 				catalogue.remember_alias(&query, selected.id);
-				store(catalogue.clone(), telemetry).await;
+				writer.remember_alias(query, series.clone());
 			}
 			Ok(Selection {
 				catalogue: catalogue.catalogue_use(series.id),
@@ -108,7 +118,7 @@ async fn choose_line(
 		}
 		None => {
 			catalogue.remove_series(selected.id);
-			store(catalogue, telemetry).await;
+			writer.remove_missing(selected.id);
 			Err("That cached Anime365 series no longer exists.".into())
 		}
 	}
@@ -117,6 +127,7 @@ async fn choose_line(
 async fn choose_interactive(
 	api: &Anime365,
 	mut catalogue: Catalogue,
+	writer: &Writer,
 	prefill: String,
 	telemetry: &Recorder,
 ) -> Result<Selection, Error> {
@@ -135,8 +146,6 @@ async fn choose_interactive(
 		selector::draw(&term, SEARCH_LABEL, &rows, &mut layout, &mut state)
 			.map_err(selector::term_error)?;
 	let (updates_tx, mut updates) = mpsc::unbounded_channel();
-	let (cache_tx, cache_rx) = mpsc::unbounded_channel();
-	drop(tokio::spawn(write_cache(cache_rx, telemetry.clone())));
 	if !catalogue.is_fresh() {
 		drop(tokio::spawn(refresh(api.clone(), updates_tx.clone())));
 	}
@@ -189,7 +198,8 @@ async fn choose_interactive(
 								if confirmed {
 									catalogue
 										.remember_alias(&query, selected.id);
-									let _ = cache_tx.send(catalogue.clone());
+									writer
+										.remember_alias(query, series.clone());
 								}
 								selector::write_choice(
 									&term,
@@ -206,7 +216,7 @@ async fn choose_interactive(
 							}
 							None => {
 								catalogue.remove_series(selected.id);
-								let _ = cache_tx.send(catalogue.clone());
+								writer.remove_missing(selected.id);
 								let view = catalogue_view(
 									&mut catalogue,
 									state.query(),
@@ -276,8 +286,8 @@ async fn choose_interactive(
 						query_results
 							.extend(incoming.iter().map(|series| series.id));
 						if !incoming.is_empty() {
+							writer.discover(incoming.clone());
 							catalogue.upsert(incoming);
-							let _ = cache_tx.send(catalogue.clone());
 							let view = catalogue_view(
 								&mut catalogue,
 								state.query(),
@@ -334,12 +344,13 @@ async fn choose_interactive(
 					state.replace_matches(view.1);
 				}
 			}
-			Event::Update(Some(Update::Refreshed(refreshed))) => {
+			Event::Update(Some(Update::Refreshed(series))) => {
 				let selected = state
 					.selected_row()
 					.map(|index| catalogue.series(index).id);
+				writer.commit_refresh(series.clone());
+				let refreshed = Catalogue::refreshed(series);
 				catalogue.merge_refresh(refreshed, &query_results);
-				let _ = cache_tx.send(catalogue.clone());
 				let view = catalogue_view(
 					&mut catalogue,
 					state.query(),
@@ -375,7 +386,7 @@ enum Event {
 enum Update {
 	Search(String, ApiResult<RemoteResults>),
 	Page(usize, Vec<Series>),
-	Refreshed(Catalogue),
+	Refreshed(Vec<Series>),
 }
 
 struct RemoteResults {
@@ -456,9 +467,8 @@ async fn refresh(api: Anime365, updates: mpsc::UnboundedSender<Update>) {
 			reached_end = true;
 		}
 	}
-	let catalogue =
-		Catalogue::refreshed(pages.into_values().flatten().collect());
-	let _ = updates.send(Update::Refreshed(catalogue));
+	let _ = updates
+		.send(Update::Refreshed(pages.into_values().flatten().collect()));
 }
 
 fn spawn_page(
@@ -518,28 +528,6 @@ fn suggestion_matches(
 		.suggestions(query, server_matches, telemetry)
 		.matches()
 		.to_vec()
-}
-
-async fn write_cache(
-	mut catalogues: mpsc::UnboundedReceiver<Catalogue>,
-	telemetry: Recorder,
-) {
-	while let Some(mut catalogue) = catalogues.recv().await {
-		while let Ok(newer) = catalogues.try_recv() {
-			catalogue = newer;
-		}
-		store(catalogue, &telemetry).await;
-	}
-}
-
-async fn store(catalogue: Catalogue, telemetry: &Recorder) {
-	let telemetry = telemetry.clone();
-	let _ = tokio::task::spawn_blocking(move || {
-		let _measurement =
-			telemetry.measure_items(Operation::CacheStore, catalogue.len());
-		series_cache::store(&catalogue);
-	})
-	.await;
 }
 
 #[cfg(test)]

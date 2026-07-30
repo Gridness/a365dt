@@ -5,9 +5,10 @@ use pretty_assertions::assert_eq;
 use semver::Version;
 
 use super::{
-	InstallationChannel, Release, Update, installation_channel_from_path,
+	InstallationChannel, Update, installation_channel_from_path,
 	render_markdown, update_from,
 };
+use crate::cache::Release;
 
 #[test]
 fn renders_supported_inline_markdown_and_visible_links() {
