@@ -23,6 +23,7 @@ reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlx.workspace = true
 tokio.workspace = true
 unicode-normalization.workspace = true
 

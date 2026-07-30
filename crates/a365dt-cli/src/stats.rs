@@ -160,11 +160,14 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 				Status::Info,
 			),
 		],
-		CacheInspection::Missing(_) => vec![
+		CacheInspection::Missing { bytes, .. } => vec![
 			Check::new("Last cache update", "Never", Status::Info)
 				.remedy("Run a title search to create the cache"),
-			Check::new("Cached Series", "Unavailable", Status::Info)
-				.remedy("Run a title search to create the cache"),
+			Check::new(
+				"Cached Series",
+				format!("0 · {}", HumanBytes(*bytes)),
+				Status::Info,
+			),
 		],
 		CacheInspection::Broken { .. } => vec![
 			Check::new("Last cache update", "Unavailable", Status::Info)

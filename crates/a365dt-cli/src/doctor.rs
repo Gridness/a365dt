@@ -69,7 +69,7 @@ fn health_checks(
 			Check::new("Series cache", "Stale", Status::Warning)
 				.remedy("Run a title search to refresh it")
 		}
-		CacheInspection::Missing(_) => {
+		CacheInspection::Missing { .. } => {
 			Check::new("Series cache", "Not created yet", Status::Info)
 				.remedy("Run a title search to create it")
 		}
@@ -173,7 +173,9 @@ fn debug_checks(
 				HumanDuration(MAX_AGE)
 			),
 		),
-		CacheInspection::Missing(path) => (path, "Missing".into()),
+		CacheInspection::Missing { path, bytes } => {
+			(path, format!("Missing · {}", HumanBytes(*bytes)))
+		}
 		CacheInspection::Broken { path, detail } => (path, detail.clone()),
 	};
 	checks.push(Check::new(

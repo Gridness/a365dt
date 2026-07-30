@@ -1,7 +1,13 @@
 use pretty_assertions::assert_eq;
 
-use super::{Aggregate, aggregate};
-use crate::telemetry::PerformanceMetric;
+use std::path::PathBuf;
+
+use super::{Aggregate, aggregate, cache_statistics};
+use crate::{
+	cache::Inspection as CacheInspection,
+	doctor::{Check, Status},
+	telemetry::PerformanceMetric,
+};
 
 #[test]
 fn aggregates_matching_operation_totals_and_recent_samples() {
@@ -38,5 +44,20 @@ fn aggregates_matching_operation_totals_and_recent_samples() {
 			work_units: 4,
 			samples: 3,
 		})
+	);
+}
+
+#[test]
+fn reports_a_valid_empty_cache_as_zero_series() {
+	assert_eq!(
+		cache_statistics(&CacheInspection::Missing {
+			path: PathBuf::from("cache.sqlite"),
+			bytes: 0,
+		}),
+		vec![
+			Check::new("Last cache update", "Never", Status::Info)
+				.remedy("Run a title search to create the cache"),
+			Check::new("Cached Series", "0 · 0 B", Status::Info),
+		]
 	);
 }
