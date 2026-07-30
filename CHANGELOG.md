@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Gridness/a365dt/compare/v0.10.0...v0.11.0) (2026-07-30)
+
+
+### Features
+
+* **cli:** add stats command ([#59](https://github.com/Gridness/a365dt/issues/59)) ([e93d775](https://github.com/Gridness/a365dt/commit/e93d775b8abd8b53265cf4de1a1b2f25f59a1ea5))
+
 ## [0.10.0](https://github.com/Gridness/a365dt/compare/v0.9.0...v0.10.0) (2026-07-30)
 
 
