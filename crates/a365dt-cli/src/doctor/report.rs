@@ -5,7 +5,7 @@ use console::style;
 use crate::ui;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Status {
+pub(crate) enum Status {
 	Healthy,
 	Info,
 	Warning,
@@ -13,7 +13,7 @@ pub(super) enum Status {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(super) struct Check {
+pub(crate) struct Check {
 	label: String,
 	value: String,
 	status: Status,
@@ -108,7 +108,7 @@ impl std::fmt::Display for Status {
 }
 
 impl Check {
-	pub fn new(
+	pub(crate) fn new(
 		label: impl Into<String>,
 		value: impl Into<String>,
 		status: Status,
@@ -121,12 +121,12 @@ impl Check {
 		}
 	}
 
-	pub fn remedy(mut self, remedy: impl Into<String>) -> Self {
+	pub(crate) fn remedy(mut self, remedy: impl Into<String>) -> Self {
 		self.remedy = Some(remedy.into());
 		self
 	}
 
-	fn row(&self) -> [String; 2] {
+	pub(crate) fn row(&self) -> [String; 2] {
 		let value = self.remedy.as_ref().map_or_else(
 			|| self.value.clone(),
 			|remedy| format!("{} — {remedy}", self.value),

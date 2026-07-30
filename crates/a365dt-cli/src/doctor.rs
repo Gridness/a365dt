@@ -10,29 +10,25 @@ use crate::{
 };
 
 mod cache;
-mod metrics;
 mod report;
 mod server;
 
-use cache::Inspection as CacheInspection;
-use metrics::{Aggregate, aggregate};
-use report::{Check, Report, Section, Status};
+pub(crate) use cache::{
+	Inspection as CacheInspection, inspect as inspect_cache,
+};
+pub(crate) use report::{Check, Status};
+use report::{Report, Section};
 use server::Probe as ServerProbe;
 
 pub async fn run(debug: bool) -> ExitCode {
 	let (server, update) = tokio::join!(server::probe(), startup::check());
-	let cache = cache::inspect();
+	let cache = inspect_cache();
 	let telemetry = telemetry::snapshot();
 	let mut sections = vec![
 		Section {
 			title: "Health",
 			debug: false,
 			checks: health_checks(&server, &cache, &telemetry, debug),
-		},
-		Section {
-			title: "Statistics",
-			debug: false,
-			checks: statistic_checks(&cache, &telemetry),
 		},
 		Section {
 			title: "Build",
@@ -98,153 +94,6 @@ fn health_checks(
 		}
 	};
 	vec![server, cache, telemetry]
-}
-
-fn statistic_checks(
-	cache: &CacheInspection,
-	snapshot: &Result<Snapshot, Error>,
-) -> Vec<Check> {
-	let mut checks = cache_statistics(cache);
-	let Ok(snapshot) = snapshot else {
-		for label in [
-			"Catalogue hit rate",
-			"API requests",
-			"Media requests",
-			"Cache retrieval",
-			"Search",
-			"Search throughput",
-			"Downloads",
-			"Download volume",
-			"Command usage",
-		] {
-			checks.push(
-				Check::new(label, "Unavailable", Status::Info).remedy(
-					"Reset local telemetry and collect new observations",
-				),
-			);
-		}
-		return checks;
-	};
-	let suffix = if snapshot.enabled {
-		""
-	} else {
-		" (historical)"
-	};
-	let hits = counter(snapshot, "catalogue.hits");
-	let misses = counter(snapshot, "catalogue.misses");
-	checks.push(rate_check("Catalogue hit rate", hits, misses, suffix));
-	checks.push(performance_check(
-		"API requests",
-		aggregate(&snapshot.performance, "request.api."),
-		suffix,
-	));
-	checks.push(performance_check(
-		"Media requests",
-		aggregate(&snapshot.performance, "request.asset."),
-		suffix,
-	));
-	checks.push(performance_check(
-		"Cache retrieval",
-		aggregate(&snapshot.performance, "cache.retrieve"),
-		suffix,
-	));
-	checks.push(performance_check(
-		"Search",
-		aggregate(&snapshot.performance, "search."),
-		suffix,
-	));
-	let rank = aggregate(&snapshot.performance, "search.rank");
-	checks.push(match rank {
-		Some(metric) => Check::new(
-			"Search throughput",
-			{
-				format!(
-					"{:.0} Series/s{suffix}",
-					metric.work_units as f64 * 1_000_000.0
-						/ metric.total_us.max(1) as f64
-				)
-			},
-			Status::Info,
-		),
-		None => Check::new(
-			"Search throughput",
-			"Unavailable (no observations)",
-			Status::Info,
-		)
-		.remedy("Run searches with telemetry enabled"),
-	});
-	let downloaded = counter(snapshot, "downloads.episodes.downloaded");
-	let skipped = counter(snapshot, "downloads.episodes.skipped");
-	let failed = counter(snapshot, "downloads.episodes.failed")
-		.saturating_add(counter(snapshot, "downloads.episodes.mux_failed"))
-		.saturating_add(counter(snapshot, "downloads.episodes.interrupted"));
-	checks.push(rate_check(
-		"Downloads",
-		downloaded.saturating_add(skipped),
-		failed,
-		suffix,
-	));
-	let batches = counter(snapshot, "downloads.batches");
-	let bytes = counter(snapshot, "downloads.bytes");
-	let episodes = downloaded.saturating_add(skipped).saturating_add(failed);
-	checks.push(if batches == 0 {
-		Check::new(
-			"Download volume",
-			"Unavailable (no observations)",
-			Status::Info,
-		)
-		.remedy("Run downloads with telemetry enabled")
-	} else {
-		Check::new(
-			"Download volume",
-			format!(
-				"{batches} batches · {episodes} Episodes · {}{suffix}",
-				HumanBytes(bytes)
-			),
-			Status::Info,
-		)
-	});
-	let commands = snapshot
-		.counters
-		.iter()
-		.filter(|(key, _)| key.starts_with("commands."))
-		.map(|(_, count)| count)
-		.sum::<u64>();
-	checks.push(Check::new(
-		"Command usage",
-		format!("{commands} commands{suffix}"),
-		Status::Info,
-	));
-	checks
-}
-
-fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
-	match cache {
-		CacheInspection::Ready { cache, bytes, .. } => vec![
-			Check::new(
-				"Last cache update",
-				telemetry::format_timestamp(Some(cache.refreshed_at())),
-				Status::Info,
-			),
-			Check::new(
-				"Cached Series",
-				format!("{} · {}", cache.len(), HumanBytes(*bytes)),
-				Status::Info,
-			),
-		],
-		CacheInspection::Missing(_) => vec![
-			Check::new("Last cache update", "Never", Status::Info)
-				.remedy("Run a title search to create the cache"),
-			Check::new("Cached Series", "Unavailable", Status::Info)
-				.remedy("Run a title search to create the cache"),
-		],
-		CacheInspection::Broken { .. } => vec![
-			Check::new("Last cache update", "Unavailable", Status::Info)
-				.remedy("Run `a365dt cache prune`"),
-			Check::new("Cached Series", "Unavailable", Status::Info)
-				.remedy("Run `a365dt cache prune`"),
-		],
-	}
 }
 
 fn build_checks(update: &Result<Option<Update>, Error>) -> Vec<Check> {
@@ -447,31 +296,6 @@ fn debug_checks(
 	checks
 }
 
-fn performance_check(
-	label: &str,
-	metric: Option<Aggregate>,
-	suffix: &str,
-) -> Check {
-	match metric {
-		Some(metric) => Check::new(
-			label,
-			{
-				format!(
-					"average {} · median {} · {} observations{suffix}",
-					milliseconds(metric.total_us / metric.count),
-					milliseconds(metric.median_us),
-					metric.count
-				)
-			},
-			Status::Info,
-		),
-		None => {
-			Check::new(label, "Unavailable (no observations)", Status::Info)
-				.remedy("Run searches or downloads with telemetry enabled")
-		}
-	}
-}
-
 fn performance_detail(metric: &PerformanceMetric) -> String {
 	let median = metric
 		.samples_us
@@ -486,29 +310,6 @@ fn performance_detail(metric: &PerformanceMetric) -> String {
 		metric.samples_us.len(),
 		metric.work_units
 	)
-}
-
-fn rate_check(label: &str, success: u64, failure: u64, suffix: &str) -> Check {
-	let total = success.saturating_add(failure);
-	if total == 0 {
-		Check::new(label, "Unavailable (no observations)", Status::Info)
-			.remedy("Run searches or downloads with telemetry enabled")
-	} else {
-		Check::new(
-			label,
-			{
-				format!(
-					"{:.1}% · {total} observations{suffix}",
-					success as f64 / total as f64 * 100.0
-				)
-			},
-			Status::Info,
-		)
-	}
-}
-
-fn counter(snapshot: &Snapshot, key: &str) -> u64 {
-	snapshot.counters.get(key).copied().unwrap_or_default()
 }
 
 fn milliseconds(microseconds: u64) -> String {

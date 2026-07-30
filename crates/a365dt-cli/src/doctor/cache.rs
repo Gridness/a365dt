@@ -6,7 +6,7 @@ use std::{
 
 use crate::series_cache::{self, Catalogue};
 
-pub(super) enum Inspection {
+pub(crate) enum Inspection {
 	Ready {
 		path: PathBuf,
 		cache: Catalogue,
@@ -19,7 +19,7 @@ pub(super) enum Inspection {
 	},
 }
 
-pub(super) fn inspect() -> Inspection {
+pub(crate) fn inspect() -> Inspection {
 	let Some(path) = series_cache::cache_path() else {
 		return Inspection::Broken {
 			path: PathBuf::from("<unresolved>"),

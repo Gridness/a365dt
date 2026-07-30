@@ -39,7 +39,7 @@ name = "search"
 harness = false
 
 [[bench]]
-name = "doctor"
+name = "stats"
 harness = false
 
 [[bench]]

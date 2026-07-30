@@ -102,6 +102,7 @@ a365dt doctor
 a365dt doctor --debug
 a365dt purge
 a365dt purge --yes
+a365dt stats
 a365dt telemetry show
 a365dt telemetry disable
 a365dt update
@@ -127,12 +128,13 @@ A catalogue hit means the selected Series was already in the persisted
 catalogue when search began. Download success includes both downloaded and
 previously verified, skipped Episodes.
 
-`a365dt doctor` checks Anime365 reachability and latency, cache freshness,
-local telemetry health, recent performance, usage statistics, build details,
-and whether a newer stable a365dt release is available. `--debug` adds paths,
-raw per-operation latency, collection dates, update-check failures, and a local
-telemetry-overhead benchmark. Statuses use `✓`, `●`, `○`, and `✗`; unavailable
-fields include the command or action needed to restore them.
+`a365dt stats` shows local cache, performance, download, and command usage
+statistics. `a365dt doctor` checks Anime365 reachability and latency, cache
+freshness, local telemetry health, build details, and whether a newer stable
+a365dt release is available. `--debug` adds paths, raw per-operation latency,
+collection dates, update-check failures, and a local telemetry-overhead
+benchmark. Statuses use `✓`, `●`, `○`, and `✗`; unavailable fields include the
+command or action needed to restore them.
 
 ## Development
 

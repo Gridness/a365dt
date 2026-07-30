@@ -70,6 +70,9 @@ fn title_query(args: &Args) -> Option<Vec<String>> {
 		Some(Commands::Doctor { query }) if !query.is_empty() => {
 			("doctor", query.clone())
 		}
+		Some(Commands::Stats { query }) if !query.is_empty() => {
+			("stats", query.clone())
+		}
 		Some(Commands::Telemetry {
 			command: TelemetryCommand::Clear { query },
 		}) if !query.is_empty() => (

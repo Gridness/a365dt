@@ -13,6 +13,7 @@ fn suggests_likely_command_and_subcommand_typos() {
 		(&["a365dt", "cache", "prne"][..], "cache prune"),
 		(&["a365dt", "doctro"][..], "doctor"),
 		(&["a365dt", "purg"][..], "purge"),
+		(&["a365dt", "sttas"][..], "stats"),
 		(&["a365dt", "udpate"][..], "update"),
 	] {
 		let args = Args::try_parse_from(arguments.iter().copied()).unwrap();
