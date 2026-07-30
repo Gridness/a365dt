@@ -71,6 +71,13 @@ struct Args {
 	#[arg(short, long, default_value = "4")]
 	jobs: NonZeroUsize,
 
+	/// Mux separate ASS subtitles into MKV without confirmation.
+	#[arg(
+		long,
+		visible_aliases = ["burn-subtitles", "as-single-file"]
+	)]
+	mux: bool,
+
 	/// Show technical error details.
 	#[arg(long, global = true)]
 	debug: bool,
@@ -392,10 +399,11 @@ async fn run(
 		));
 	}
 	let mux = if separate_subtitles > 0 && ffmpeg_available().await {
-		ui::confirm(
-			"Mux separate ASS subtitles into MKV after download?",
-			false,
-		)?
+		args.mux
+			|| ui::confirm(
+				"Mux separate ASS subtitles into MKV after download?",
+				false,
+			)?
 	} else {
 		if separate_subtitles > 0 {
 			ui::warning(
