@@ -11,6 +11,7 @@ mod select;
 mod series_cache;
 mod series_search;
 mod startup;
+mod stats;
 mod telemetry;
 mod ui;
 
@@ -108,6 +109,12 @@ enum Commands {
 		/// Purge without asking for confirmation.
 		#[arg(short, long)]
 		yes: bool,
+	},
+
+	/// Show local cache, usage, and performance statistics.
+	Stats {
+		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		query: Vec<String>,
 	},
 
 	/// Inspect or control local usage telemetry.
@@ -271,6 +278,9 @@ async fn main() -> ExitCode {
 		Ok(ExitCode::SUCCESS)
 	} else if let Some(Commands::Doctor { .. }) = args.command.as_ref() {
 		Ok(doctor::run(debug).await)
+	} else if let Some(Commands::Stats { .. }) = args.command.as_ref() {
+		stats::run();
+		Ok(ExitCode::SUCCESS)
 	} else if let Some(Commands::Update { .. }) = args.command.as_ref() {
 		startup::check().await.map(|update| {
 			if let Some(update) = update {
@@ -340,6 +350,7 @@ fn telemetry_command(args: &Args) -> telemetry::Command {
 		Some(Commands::Purge { .. }) => {
 			unreachable!("purge returns before recording")
 		}
+		Some(Commands::Stats { .. }) => telemetry::Command::Stats,
 		Some(Commands::Telemetry { .. }) => {
 			unreachable!("telemetry commands return before recording")
 		}

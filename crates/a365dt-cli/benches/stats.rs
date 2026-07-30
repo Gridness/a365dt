@@ -10,7 +10,7 @@ mod telemetry {
 	}
 }
 
-#[path = "../src/doctor/metrics.rs"]
+#[path = "../src/stats/metrics.rs"]
 mod metrics;
 
 use metrics::{Aggregate, aggregate};
