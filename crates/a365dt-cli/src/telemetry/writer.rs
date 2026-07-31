@@ -7,9 +7,8 @@ use tokio::{
 };
 
 use super::{
-	Error, InvocationId, Observation, Paths, Recorder, Snapshot,
-	commit_observations, is_disabled, read_stats_locked, snapshot,
-	snapshot::Overhead,
+	Error, InvocationId, Observation, Paths, Recorder, Snapshot, snapshot,
+	snapshot::Overhead, storage::Store,
 };
 
 const BATCH_INTERVAL: Duration = Duration::from_secs(1);
@@ -21,7 +20,7 @@ pub struct Writer {
 
 enum State {
 	Ready {
-		paths: Paths,
+		store: Store,
 		background: Background,
 	},
 	Unavailable(Error),
@@ -36,9 +35,12 @@ enum Background {
 }
 
 impl Writer {
-	pub fn open(invocation_id: InvocationId) -> (Recorder, Self) {
-		match Paths::discover().and_then(|paths| Self::at(paths, invocation_id))
-		{
+	pub async fn open(invocation_id: InvocationId) -> (Recorder, Self) {
+		let result = match Paths::discover() {
+			Ok(paths) => Self::at(paths, invocation_id).await,
+			Err(error) => Err(error),
+		};
+		match result {
 			Ok(owner) => owner,
 			Err(error) => (
 				Recorder::default(),
@@ -50,20 +52,25 @@ impl Writer {
 		}
 	}
 
-	pub(super) fn at(
+	pub(super) async fn at(
 		paths: Paths,
 		invocation_id: InvocationId,
 	) -> Result<(Recorder, Self), Error> {
-		let enabled = !is_disabled(&paths)?;
-		read_stats_locked(&paths, enabled)?;
-		let (recorder, background) = if enabled {
+		let store = Store::open(paths).await?;
+		let state = store.collection_state().await?;
+		let (recorder, background) = if state.enabled {
 			let (observations, receiver) = mpsc::unbounded_channel();
 			let (finish, finishing) = oneshot::channel();
 			(
 				Recorder::connected(invocation_id, observations),
 				Background::Running {
 					finish,
-					task: tokio::spawn(run(receiver, finishing, paths.clone())),
+					task: tokio::spawn(run(
+						receiver,
+						finishing,
+						store.clone(),
+						state.last_cleared_at_ms,
+					)),
 				},
 			)
 		} else {
@@ -73,21 +80,21 @@ impl Writer {
 			recorder,
 			Self {
 				invocation_id,
-				state: State::Ready { paths, background },
+				state: State::Ready { store, background },
 			},
 		))
 	}
 
-	pub fn initialization_warning(&self) -> Option<&Error> {
+	pub fn initialization_warning(&self) -> Option<Error> {
 		match &self.state {
-			State::Ready { .. } => None,
-			State::Unavailable(error) => Some(error),
+			State::Ready { store, .. } => store.warning(),
+			State::Unavailable(error) => Some(error.clone()),
 		}
 	}
 
-	pub fn snapshot(&self) -> Result<Snapshot, Error> {
+	pub async fn snapshot(&self) -> Result<Snapshot, Error> {
 		match &self.state {
-			State::Ready { paths, .. } => snapshot::capture(paths),
+			State::Ready { store, .. } => snapshot::capture(store).await,
 			State::Unavailable(error) => Err(error.clone()),
 		}
 	}
@@ -98,18 +105,21 @@ impl Writer {
 
 	pub async fn finish(self) -> Result<(), Error> {
 		match self.state {
-			State::Ready {
-				background: Background::Running { finish, task },
-				..
-			} => {
-				let _ = finish.send(());
-				task.await.map_err(writer_stopped)?
+			State::Ready { store, background } => {
+				let result = match background {
+					Background::Running { finish, task } => {
+						let _ = finish.send(());
+						match task.await {
+							Ok(result) => result,
+							Err(error) => Err(writer_stopped(error)),
+						}
+					}
+					Background::Disabled => Ok(()),
+				};
+				store.close().await;
+				result
 			}
-			State::Ready {
-				background: Background::Disabled,
-				..
-			}
-			| State::Unavailable(_) => Ok(()),
+			State::Unavailable(_) => Ok(()),
 		}
 	}
 }
@@ -117,7 +127,8 @@ impl Writer {
 async fn run(
 	mut observations: mpsc::UnboundedReceiver<Observation>,
 	mut finishing: oneshot::Receiver<()>,
-	paths: Paths,
+	store: Store,
+	mut watermark: Option<u64>,
 ) -> Result<(), Error> {
 	let mut first_error = None;
 	loop {
@@ -136,7 +147,7 @@ async fn run(
 				}
 				if !batch.is_empty() {
 					remember_failure(
-						commit_observations(&paths, batch),
+						store.commit(&mut watermark, batch).await,
 						&mut first_error,
 					);
 				}
@@ -163,7 +174,10 @@ async fn run(
 				},
 			}
 		};
-		remember_failure(commit_observations(&paths, batch), &mut first_error);
+		remember_failure(
+			store.commit(&mut watermark, batch).await,
+			&mut first_error,
+		);
 		if closed {
 			break;
 		}
@@ -185,3 +199,7 @@ fn remember_failure(
 fn writer_stopped(error: JoinError) -> Error {
 	Error::with_debug("The local telemetry writer stopped unexpectedly.", error)
 }
+
+#[cfg(test)]
+#[path = "writer_tests.rs"]
+mod tests;

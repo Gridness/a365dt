@@ -10,143 +10,17 @@ use uuid::{Uuid, Version};
 
 use super::{
 	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Paths,
-	Recorder, Stats, Usage, Writer, clear_at, commit_observations, disable_at,
+	Recorder, Writer,
 	display::format_timestamp,
-	enable_at,
-	performance::{Performance, Work},
-	push_sample, read_stats_locked,
 	recording::{DownloadOutcome, Observation, ObservationKind},
+	snapshot,
+	storage::Store,
 };
 use crate::{
 	api::{Episode, Series},
 	download::{Outcome, Status, Summary},
 	error::Error,
 };
-
-#[tokio::test]
-async fn records_aggregate_usage_without_download_identity() {
-	let paths = paths("aggregate");
-	let (recorder, writer) =
-		Writer::at(paths.clone(), InvocationId::new()).unwrap();
-	recorder.record_command(Command::Download, CommandOutcome::Success);
-	recorder.record_command(Command::Update, CommandOutcome::Failure);
-	recorder.record_series(&series(), CatalogueUse::Hit);
-	recorder.record_download(
-		&series(),
-		&Summary {
-			outcomes: vec![
-				Outcome {
-					episode: "secret episode".into(),
-					status: Status::Downloaded,
-					bytes: 42,
-					detail: Error::new("secret path"),
-				},
-				Outcome {
-					episode: "existing episode".into(),
-					status: Status::Skipped,
-					bytes: 100,
-					detail: Error::new("secret existing path"),
-				},
-			],
-			elapsed: Duration::from_millis(12),
-		},
-	);
-	writer.finish().await.unwrap();
-
-	let stats = read_stats_locked(&paths, true).unwrap();
-	let json = serde_json::to_string(&stats).unwrap();
-	assert_eq!(
-		stats.usage.counters,
-		BTreeMap::from([
-			("catalogue.hits".into(), 1),
-			("commands.download.success".into(), 1),
-			("commands.update.failure".into(), 1),
-			("downloads.batches".into(), 1),
-			("downloads.bytes".into(), 42),
-			("downloads.episodes.downloaded".into(), 1),
-			("downloads.episodes.skipped".into(), 1),
-		])
-	);
-	assert_eq!(
-		stats.usage.samples,
-		BTreeMap::from([("downloads.batch_duration_ms".into(), vec![12])])
-	);
-	assert!(!json.contains("secret"));
-	cleanup(&paths);
-}
-
-#[tokio::test]
-async fn opt_out_and_clear_have_independent_lifecycles() {
-	let paths = paths("lifecycle");
-	let (recorder, writer) =
-		Writer::at(paths.clone(), InvocationId::new()).unwrap();
-	recorder.record_command(Command::Download, CommandOutcome::Failure);
-	writer.finish().await.unwrap();
-
-	disable_at(&paths, InvocationId::new()).unwrap();
-	clear_at(&paths).unwrap();
-	let disabled = read_stats_locked(&paths, false).unwrap();
-	assert_eq!(disabled.usage, Usage::default());
-	assert!(paths.disabled.exists());
-	assert!(disabled.last_disabled_at.is_some());
-	assert!(disabled.last_cleared_at.is_some());
-
-	enable_at(&paths, InvocationId::new()).unwrap();
-	let enabled = read_stats_locked(&paths, true).unwrap();
-	assert_eq!(enabled.schema_version, super::SCHEMA_VERSION);
-	assert!(!paths.disabled.exists());
-	assert!(enabled.last_enabled_at.is_some());
-	cleanup(&paths);
-}
-
-#[test]
-fn formats_utc_calendar_dates() {
-	assert_eq!(
-		[
-			format_timestamp(None),
-			format_timestamp(Some(0)),
-			format_timestamp(Some(951_782_400)),
-		],
-		[
-			"Never",
-			"1970-01-01 00:00:00 UTC",
-			"2000-02-29 00:00:00 UTC",
-		]
-	);
-}
-
-#[test]
-fn keeps_only_the_latest_latency_samples() {
-	let mut samples = (0..super::SAMPLE_LIMIT as u64).collect::<Vec<_>>();
-
-	push_sample(&mut samples, super::SAMPLE_LIMIT as u64);
-
-	assert_eq!(
-		samples,
-		(1..=super::SAMPLE_LIMIT as u64).collect::<Vec<_>>()
-	);
-}
-
-#[tokio::test]
-async fn clones_share_the_same_writer() {
-	let paths = paths("clones");
-	let (recorder, writer) =
-		Writer::at(paths.clone(), InvocationId::new()).unwrap();
-	recorder.record_command(Command::Download, CommandOutcome::Success);
-	recorder
-		.clone()
-		.record_command(Command::Update, CommandOutcome::Failure);
-	writer.finish().await.unwrap();
-
-	assert_eq!(
-		read_stats_locked(&paths, true).unwrap().usage.counters,
-		BTreeMap::from([
-			("commands.download.success".into(), 1),
-			("commands.update.failure".into(), 1),
-		])
-	);
-	cleanup(&paths);
-}
 
 #[test]
 fn recorder_sends_complete_typed_privacy_safe_observations_from_clones() {
@@ -235,149 +109,284 @@ fn recorder_sends_complete_typed_privacy_safe_observations_from_clones() {
 	);
 }
 
-#[test]
-fn keeps_bounded_recent_performance_samples() {
-	let mut performance = Performance::default();
-	for microseconds in 0..=101 {
-		performance.record(
-			"search.rank",
-			Duration::from_micros(microseconds),
-			Work::Items(30_000),
-		);
-	}
-
-	let (operation, metric) = performance.iter().next().unwrap();
-	assert_eq!(
-		(
-			operation,
-			metric.count(),
-			metric.total_us(),
-			metric.work_units(),
-			metric.samples_us().to_vec(),
-		),
-		("search.rank", 102, 5_151, 3_060_000, (1..=101).collect(),)
-	);
-}
-
 #[tokio::test(start_paused = true)]
 async fn writer_commits_one_second_batches_and_finish_drains_the_tail() {
 	let paths = paths("batching");
-	let (recorder, writer) =
-		Writer::at(paths.clone(), InvocationId::new()).unwrap();
+	tokio::time::resume();
+	let (recorder, writer) = Writer::at(paths.clone(), InvocationId::new())
+		.await
+		.unwrap();
+	let control = Store::open(paths.clone()).await.unwrap();
+	let mut connection = control.pool.acquire().await.unwrap();
+	tokio::time::pause();
 	recorder.record_command(Command::Download, CommandOutcome::Success);
-	tokio::task::yield_now().await;
+	for _ in 0..10 {
+		tokio::task::yield_now().await;
+	}
 
 	tokio::time::advance(Duration::from_millis(999)).await;
 	assert_eq!(
-		read_stats_locked(&paths, true).unwrap().usage,
-		Usage::default()
+		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM command_events")
+			.fetch_one(&mut *connection)
+			.await
+			.unwrap(),
+		0
 	);
 	tokio::time::advance(Duration::from_millis(1)).await;
-	tokio::task::yield_now().await;
-	assert_eq!(
-		writer.snapshot().unwrap().counters,
-		BTreeMap::from([("commands.download.success".into(), 1)])
-	);
+	tokio::time::resume();
+	let committed = tokio::time::timeout(Duration::from_secs(5), async {
+		loop {
+			let committed = sqlx::query_scalar::<_, i64>(
+				"SELECT COUNT(*) FROM command_events",
+			)
+			.fetch_one(&mut *connection)
+			.await
+			.unwrap();
+			if committed > 0 {
+				break committed;
+			}
+			tokio::task::yield_now().await;
+		}
+	})
+	.await
+	.unwrap();
+	assert_eq!(committed, 1);
 
 	recorder.record_command(Command::Update, CommandOutcome::Failure);
 	writer.finish().await.unwrap();
+	drop(connection);
+	control.close().await;
+	let store = Store::open(paths.clone()).await.unwrap();
 	assert_eq!(
-		read_stats_locked(&paths, true).unwrap().usage.counters,
+		snapshot::capture(&store).await.unwrap().counters,
 		BTreeMap::from([
 			("commands.download.success".into(), 1),
 			("commands.update.failure".into(), 1),
 		])
 	);
+	store.close().await;
 	cleanup(&paths);
 }
 
-#[tokio::test(start_paused = true)]
-async fn writer_rechecks_collection_state_for_each_batch() {
-	let paths = paths("collection-state");
+#[tokio::test]
+async fn batch_commit_rechecks_collection_state_and_resumes_after_reenable() {
+	let paths = paths("state-rechecks");
+	let control = Store::open(paths.clone()).await.unwrap();
+	let mut watermark =
+		control.collection_state().await.unwrap().last_cleared_at_ms;
 	let invocation_id = InvocationId::new();
-	let (recorder, writer) = Writer::at(paths.clone(), invocation_id).unwrap();
-	recorder.record_command(Command::Download, CommandOutcome::Success);
-	tokio::task::yield_now().await;
-
-	disable_at(&paths, invocation_id).unwrap();
-	tokio::time::advance(Duration::from_secs(1)).await;
-	tokio::task::yield_now().await;
-	enable_at(&paths, invocation_id).unwrap();
-	recorder.record_command(Command::Update, CommandOutcome::Failure);
-	tokio::task::yield_now().await;
-	tokio::time::advance(Duration::from_secs(1)).await;
-	tokio::task::yield_now().await;
+	control.disable(InvocationId::new()).await.unwrap();
+	control
+		.commit(
+			&mut watermark,
+			vec![command_observation(invocation_id, 1, Command::Download)],
+		)
+		.await
+		.unwrap();
+	control.enable(InvocationId::new()).await.unwrap();
+	control
+		.commit(
+			&mut watermark,
+			vec![command_observation(invocation_id, 2, Command::Update)],
+		)
+		.await
+		.unwrap();
 
 	assert_eq!(
-		writer.snapshot().unwrap().counters,
+		snapshot::capture(&control).await.unwrap().counters,
 		BTreeMap::from([
 			("commands.telemetry.disable.success".into(), 1),
 			("commands.telemetry.enable.success".into(), 1),
-			("commands.update.failure".into(), 1),
+			("commands.update.success".into(), 1),
 		])
 	);
-	writer.finish().await.unwrap();
+	control.close().await;
 	cleanup(&paths);
 }
 
-#[tokio::test(start_paused = true)]
-async fn writer_reports_the_first_failure_after_continuing_later_batches() {
-	let paths = paths("background-failure");
-	let (recorder, writer) =
-		Writer::at(paths.clone(), InvocationId::new()).unwrap();
-	recorder.record_command(Command::Download, CommandOutcome::Success);
-	fs::write(&paths.data, b"{").unwrap();
-	tokio::task::yield_now().await;
-	tokio::time::advance(Duration::from_secs(1)).await;
-	tokio::task::yield_now().await;
-
-	fs::write(&paths.data, serde_json::to_vec(&Stats::default()).unwrap())
+#[tokio::test]
+async fn disabled_at_start_recorder_stays_disabled_after_reenable() {
+	let paths = paths("disabled-start");
+	let control = Store::open(paths.clone()).await.unwrap();
+	control.disable(InvocationId::new()).await.unwrap();
+	let (recorder, writer) = Writer::at(paths.clone(), InvocationId::new())
+		.await
 		.unwrap();
-	recorder.record_command(Command::Update, CommandOutcome::Failure);
-	tokio::task::yield_now().await;
-	tokio::time::advance(Duration::from_secs(1)).await;
-	tokio::task::yield_now().await;
-	assert_eq!(
-		writer.snapshot().unwrap().counters,
-		BTreeMap::from([("commands.update.failure".into(), 1)])
-	);
+	control.enable(InvocationId::new()).await.unwrap();
+	recorder.record_command(Command::Download, CommandOutcome::Success);
+	writer.finish().await.unwrap();
 
-	let error = writer.finish().await.unwrap_err();
 	assert_eq!(
-		error.message(),
-		"Could not read the local telemetry because it is invalid. Run `a365dt telemetry clear` to reset it."
+		snapshot::capture(&control).await.unwrap().counters,
+		BTreeMap::from([
+			("commands.telemetry.disable.success".into(), 1),
+			("commands.telemetry.enable.success".into(), 1),
+		])
+	);
+	control.close().await;
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn clear_watermark_discards_buffered_history_atomically() {
+	let paths = paths("watermark");
+	let store = Store::open(paths.clone()).await.unwrap();
+	let mut baseline =
+		store.collection_state().await.unwrap().last_cleared_at_ms;
+	store.clear().await.unwrap();
+	let watermark = store
+		.collection_state()
+		.await
+		.unwrap()
+		.last_cleared_at_ms
+		.unwrap();
+	let invocation_id = InvocationId::new();
+	store
+		.commit(
+			&mut baseline,
+			vec![
+				command_observation(
+					invocation_id,
+					watermark,
+					Command::Download,
+				),
+				command_observation(
+					invocation_id,
+					watermark + 1,
+					Command::Update,
+				),
+			],
+		)
+		.await
+		.unwrap();
+
+	assert_eq!(
+		snapshot::capture(&store).await.unwrap().counters,
+		BTreeMap::from([("commands.update.success".into(), 1)])
+	);
+	store.close().await;
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn preserves_legacy_opt_out_before_retiring_aggregate_files() {
+	let paths = paths("cutover");
+	fs::create_dir_all(paths.data.parent().unwrap()).unwrap();
+	fs::create_dir_all(paths.disabled.parent().unwrap()).unwrap();
+	fs::write(paths.data.with_file_name("telemetry.json"), b"legacy").unwrap();
+	fs::write(&paths.lock, b"legacy").unwrap();
+	fs::write(&paths.disabled, b"123").unwrap();
+
+	let store = Store::open(paths.clone()).await.unwrap();
+
+	assert_eq!(
+		store.collection_state().await.unwrap(),
+		super::storage::CollectionState {
+			enabled: false,
+			last_enabled_at_ms: None,
+			last_disabled_at_ms: Some(123_000),
+			last_cleared_at_ms: None,
+		}
+	);
+	assert!(!paths.data.with_file_name("telemetry.json").exists());
+	assert!(!paths.lock.exists());
+	assert!(!paths.disabled.exists());
+	store.close().await;
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn failed_initialization_keeps_every_legacy_file() {
+	let paths = paths("failed-cutover");
+	fs::create_dir_all(&paths.data).unwrap();
+	fs::create_dir_all(paths.disabled.parent().unwrap()).unwrap();
+	let legacy = paths.data.with_file_name("telemetry.json");
+	fs::write(&legacy, b"legacy").unwrap();
+	fs::write(&paths.lock, b"legacy").unwrap();
+	fs::write(&paths.disabled, b"123").unwrap();
+
+	let error = match Store::open(paths.clone()).await {
+		Ok(_) => panic!("invalid telemetry path should fail"),
+		Err(error) => error,
+	};
+
+	assert!(
+		error
+			.to_string()
+			.contains("Could not open the local telemetry")
+	);
+	assert_eq!(
+		(
+			fs::read(legacy).unwrap(),
+			fs::read(&paths.lock).unwrap(),
+			fs::read(&paths.disabled).unwrap(),
+		),
+		(b"legacy".to_vec(), b"legacy".to_vec(), b"123".to_vec())
+	);
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn invalid_legacy_opt_out_keeps_every_legacy_file() {
+	let paths = paths("invalid-opt-out");
+	fs::create_dir_all(paths.data.parent().unwrap()).unwrap();
+	fs::create_dir_all(paths.disabled.parent().unwrap()).unwrap();
+	let legacy = paths.data.with_file_name("telemetry.json");
+	fs::write(&legacy, b"legacy").unwrap();
+	fs::write(&paths.lock, b"legacy").unwrap();
+	fs::write(&paths.disabled, b"invalid").unwrap();
+
+	let error = match Store::open(paths.clone()).await {
+		Ok(_) => panic!("invalid opt-out timestamp should fail"),
+		Err(error) => error,
+	};
+
+	assert!(
+		error
+			.to_string()
+			.contains("Could not open the local telemetry")
+	);
+	assert!(!paths.data.exists());
+	assert_eq!(
+		(
+			fs::read(legacy).unwrap(),
+			fs::read(&paths.lock).unwrap(),
+			fs::read(&paths.disabled).unwrap(),
+		),
+		(b"legacy".to_vec(), b"legacy".to_vec(), b"invalid".to_vec())
 	);
 	cleanup(&paths);
 }
 
 #[test]
-fn clear_watermark_prevents_pending_observations_from_reappearing() {
-	let paths = paths("clear-watermark");
-	clear_at(&paths).unwrap();
-	let watermark = read_stats_locked(&paths, true)
-		.unwrap()
-		.last_cleared_at_ms
-		.unwrap();
-	let mut before = Observation::command(
-		InvocationId::new(),
-		Command::Download,
-		CommandOutcome::Success,
-	);
-	before.observed_at_ms = watermark;
-	let mut after = Observation::command(
-		InvocationId::new(),
-		Command::Update,
-		CommandOutcome::Failure,
-	);
-	after.observed_at_ms = watermark + 1;
-
-	commit_observations(&paths, vec![before, after]).unwrap();
-
+fn formats_utc_calendar_dates() {
 	assert_eq!(
-		read_stats_locked(&paths, true).unwrap().usage.counters,
-		BTreeMap::from([("commands.update.failure".into(), 1)])
+		[
+			format_timestamp(None),
+			format_timestamp(Some(0)),
+			format_timestamp(Some(951_782_400)),
+		],
+		[
+			"Never",
+			"1970-01-01 00:00:00 UTC",
+			"2000-02-29 00:00:00 UTC",
+		]
 	);
-	cleanup(&paths);
+}
+
+fn command_observation(
+	invocation_id: InvocationId,
+	observed_at_ms: u64,
+	command: Command,
+) -> Observation {
+	Observation {
+		invocation_id,
+		observed_at_ms,
+		kind: ObservationKind::Command {
+			command,
+			outcome: CommandOutcome::Success,
+		},
+	}
 }
 
 fn paths(name: &str) -> Paths {
@@ -390,29 +399,28 @@ fn paths(name: &str) -> Paths {
 			.as_nanos()
 	));
 	Paths {
-		data: root.join("data/telemetry.json"),
+		data: root.join("data/telemetry.sqlite"),
 		lock: root.join("data/telemetry.lock"),
 		disabled: root.join("config/telemetry-disabled"),
 	}
+}
+
+fn cleanup(paths: &Paths) {
+	fs::remove_dir_all(paths.data.parent().unwrap().parent().unwrap()).unwrap();
 }
 
 fn series() -> Series {
 	Series {
 		id: 365,
 		title: "Private Series title".into(),
-		year: None,
-		type_title: None,
-		number_of_episodes: None,
-		poster_url_small: Some("secret poster URL".into()),
+		year: Some(2024),
+		type_title: Some("TV".into()),
+		number_of_episodes: Some(12),
+		poster_url_small: Some("secret poster".into()),
 		episodes: vec![Episode {
-			id: 999,
+			id: 1,
 			episode_int: "secret number".into(),
-			episode_full: "secret episode identity".into(),
+			episode_full: "secret episode".into(),
 		}],
 	}
-}
-
-fn cleanup(paths: &Paths) {
-	let root = paths.data.parent().unwrap().parent().unwrap();
-	fs::remove_dir_all(root).unwrap();
 }

@@ -36,3 +36,30 @@ jobs:
           fail_ci_if_error: true
           files: lcov.info
           use_oidc: true
+
+  sqlite-process-safety:
+    name: SQLite process safety (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install just
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: just
+          fallback: none
+
+      - name: Build focused tests
+        run: just test -p a365dt-cli --no-run
+
+      - name: Run SQLite process safety
+        run: >-
+          just test -p a365dt-cli
+          cache::process_tests::sqlite_process_safety
+          -- --exact --nocapture

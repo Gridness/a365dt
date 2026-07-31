@@ -77,6 +77,8 @@ fn preserves_the_complete_rendered_telemetry_projection() {
 		schema_version: 1,
 		first_recorded_at: Some(1),
 		last_recorded_at: Some(2),
+		first_download_at: Some(1),
+		last_download_at: Some(2),
 		last_enabled_at: Some(1),
 		last_disabled_at: Some(2),
 		last_cleared_at: None,
@@ -91,6 +93,7 @@ fn preserves_the_complete_rendered_telemetry_projection() {
 			("downloads.episodes.failed".into(), 1),
 			("downloads.episodes.skipped".into(), 1),
 		]),
+		samples: BTreeMap::new(),
 		performance: vec![
 			PerformanceMetric {
 				operation: "request.api.search".into(),

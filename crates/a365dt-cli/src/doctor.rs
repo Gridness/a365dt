@@ -23,7 +23,7 @@ pub async fn run(
 ) -> ExitCode {
 	let (server, update, cache) =
 		tokio::join!(server::probe(), startup::check(store), store.inspect());
-	let telemetry = telemetry_writer.snapshot();
+	let telemetry = telemetry_writer.snapshot().await;
 	let mut sections = vec![
 		Section {
 			title: "Health",
@@ -96,7 +96,7 @@ fn health_checks(
 			.remedy("Run `a365dt telemetry enable` to resume observations"),
 		Err(error) => {
 			Check::new("Local telemetry", error.render(debug), Status::Error)
-				.remedy("Run `a365dt telemetry clear` to reset it")
+				.remedy("Run `a365dt doctor --debug` to inspect its database")
 		}
 	};
 	vec![server, cache, telemetry]

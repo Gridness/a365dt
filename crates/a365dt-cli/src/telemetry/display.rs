@@ -3,43 +3,46 @@ use std::{fmt, time::Duration};
 use console::style;
 use indicatif::HumanDuration;
 
-use super::{Paths, Stats};
+use super::Snapshot;
 use crate::ui;
 
-pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
+pub(super) fn print(snapshot: &Snapshot) {
 	ui::heading("Local telemetry");
 	ui::grid(&[
-		row("Collection", if disabled { "Disabled" } else { "Enabled" }),
-		row("Data", paths.data.display()),
-		row("Opt-out", paths.disabled.display()),
-		row("Schema", stats.schema_version),
+		row(
+			"Collection",
+			if snapshot.enabled {
+				"Enabled"
+			} else {
+				"Disabled"
+			},
+		),
+		row("Data", snapshot.data_path.display()),
+		row("Opt-out", snapshot.disabled_path.display()),
+		row("Schema", snapshot.schema_version),
 		row(
 			"First observation",
-			format_timestamp(stats.usage.first_recorded_at),
+			format_timestamp(snapshot.first_recorded_at),
 		),
 		row(
 			"Last observation",
-			format_timestamp(stats.usage.last_recorded_at),
+			format_timestamp(snapshot.last_recorded_at),
 		),
-		row("Last enabled", format_timestamp(stats.last_enabled_at)),
-		row("Last disabled", format_timestamp(stats.last_disabled_at)),
-		row("Last cleared", format_timestamp(stats.last_cleared_at)),
+		row("Last enabled", format_timestamp(snapshot.last_enabled_at)),
+		row("Last disabled", format_timestamp(snapshot.last_disabled_at)),
+		row("Last cleared", format_timestamp(snapshot.last_cleared_at)),
 		row(
 			"First download",
-			format_timestamp(stats.usage.first_download_at),
+			format_timestamp(snapshot.first_download_at),
 		),
-		row(
-			"Last download",
-			format_timestamp(stats.usage.last_download_at),
-		),
+		row("Last download", format_timestamp(snapshot.last_download_at)),
 	]);
 
 	ui::heading("Collected counters");
-	if stats.usage.counters.is_empty() {
+	if snapshot.counters.is_empty() {
 		ui::note("No counters recorded");
 	} else {
-		let rows = stats
-			.usage
+		let rows = snapshot
 			.counters
 			.iter()
 			.map(|(key, value)| row(key, value))
@@ -52,23 +55,25 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 		row(
 			"catalogue.hit_rate",
 			rate(
-				counter(stats, "catalogue.hits"),
-				counter(stats, "catalogue.misses"),
+				counter(snapshot, "catalogue.hits"),
+				counter(snapshot, "catalogue.misses"),
 			),
 		),
 		row(
 			"downloads.success_rate",
 			rate(
-				counter(stats, "downloads.episodes.downloaded").saturating_add(
-					counter(stats, "downloads.episodes.skipped"),
-				),
-				counter(stats, "downloads.episodes.failed")
+				counter(snapshot, "downloads.episodes.downloaded")
 					.saturating_add(counter(
-						stats,
+						snapshot,
+						"downloads.episodes.skipped",
+					)),
+				counter(snapshot, "downloads.episodes.failed")
+					.saturating_add(counter(
+						snapshot,
 						"downloads.episodes.mux_failed",
 					))
 					.saturating_add(counter(
-						stats,
+						snapshot,
 						"downloads.episodes.interrupted",
 					)),
 			),
@@ -76,7 +81,7 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 	]);
 
 	ui::heading("Performance observations");
-	if stats.usage.performance.is_empty() {
+	if snapshot.performance.is_empty() {
 		ui::note("No performance observations recorded");
 	} else {
 		let mut rows = vec![[
@@ -87,29 +92,27 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 			style("Median").bold().to_string(),
 			style("Work units").bold().to_string(),
 		]];
-		rows.extend(stats.usage.performance.iter().map(
-			|(operation, metric)| {
-				[
-					operation.to_owned(),
-					metric.count().to_string(),
-					duration_us(metric.total_us()),
-					duration_us(
-						metric
-							.total_us()
-							.checked_div(metric.count())
-							.unwrap_or_default(),
-					),
-					median(metric.samples_us())
-						.map_or_else(|| "Unavailable".into(), duration_us),
-					metric.work_units().to_string(),
-				]
-			},
-		));
+		rows.extend(snapshot.performance.iter().map(|metric| {
+			[
+				metric.operation.clone(),
+				metric.count.to_string(),
+				duration_us(metric.total_us),
+				duration_us(
+					metric
+						.total_us
+						.checked_div(metric.count)
+						.unwrap_or_default(),
+				),
+				median(&metric.samples_us)
+					.map_or_else(|| "Unavailable".into(), duration_us),
+				metric.work_units.to_string(),
+			]
+		}));
 		ui::grid(&rows);
 	}
 
 	ui::heading("Recent samples");
-	if stats.usage.samples.is_empty() {
+	if snapshot.samples.is_empty() {
 		ui::note("No samples recorded");
 	} else {
 		let mut rows = vec![[
@@ -117,7 +120,7 @@ pub(super) fn print(paths: &Paths, stats: &Stats, disabled: bool) {
 			style("Samples").bold().to_string(),
 			style("Median").bold().to_string(),
 		]];
-		rows.extend(stats.usage.samples.iter().map(|(key, samples)| {
+		rows.extend(snapshot.samples.iter().map(|(key, samples)| {
 			[
 				key.clone(),
 				samples.len().to_string(),
@@ -137,8 +140,8 @@ fn row(label: impl fmt::Display, value: impl fmt::Display) -> [String; 2] {
 	[style(label).bold().to_string(), value.to_string()]
 }
 
-fn counter(stats: &Stats, key: &str) -> u64 {
-	stats.usage.counters.get(key).copied().unwrap_or_default()
+fn counter(snapshot: &Snapshot, key: &str) -> u64 {
+	snapshot.counters.get(key).copied().unwrap_or_default()
 }
 
 fn rate(success: u64, failure: u64) -> String {

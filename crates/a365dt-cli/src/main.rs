@@ -10,6 +10,7 @@ mod poster;
 mod search;
 mod select;
 mod series_search;
+mod sqlite;
 mod startup;
 mod stats;
 mod telemetry;
@@ -243,7 +244,7 @@ async fn main() -> ExitCode {
 		else {
 			unreachable!("the Telemetry control route contains its command")
 		};
-		return match run_telemetry(command, invocation_id) {
+		return match run_telemetry(command, invocation_id).await {
 			Ok(()) => ExitCode::SUCCESS,
 			Err(error) => {
 				ui::failure(error.render(debug));
@@ -252,7 +253,8 @@ async fn main() -> ExitCode {
 		};
 	}
 	let command = telemetry_command(&args);
-	let (telemetry, telemetry_writer) = telemetry::Writer::open(invocation_id);
+	let (telemetry, telemetry_writer) =
+		telemetry::Writer::open(invocation_id).await;
 	if let Some(error) = telemetry_writer.initialization_warning() {
 		ui::warning(error.render(debug));
 	}
@@ -370,15 +372,19 @@ fn completion_shell(arguments: &[String]) -> Option<Shell> {
 	shell.parse().ok()
 }
 
-fn run_telemetry(
+async fn run_telemetry(
 	command: &TelemetryCommand,
 	invocation_id: telemetry::InvocationId,
 ) -> Result<(), Error> {
 	match command {
-		TelemetryCommand::Clear { .. } => telemetry::clear(),
-		TelemetryCommand::Disable { .. } => telemetry::disable(invocation_id),
-		TelemetryCommand::Enable { .. } => telemetry::enable(invocation_id),
-		TelemetryCommand::Show { .. } => telemetry::show(invocation_id),
+		TelemetryCommand::Clear { .. } => telemetry::clear().await,
+		TelemetryCommand::Disable { .. } => {
+			telemetry::disable(invocation_id).await
+		}
+		TelemetryCommand::Enable { .. } => {
+			telemetry::enable(invocation_id).await
+		}
+		TelemetryCommand::Show { .. } => telemetry::show(invocation_id).await,
 		TelemetryCommand::Query(_) => {
 			unreachable!("telemetry queries return to title search")
 		}

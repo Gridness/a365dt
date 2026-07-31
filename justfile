@@ -31,6 +31,10 @@ install:
 test *args:
     RUST_MIN_STACK={{ rust_min_stack }} cargo test --no-fail-fast {{ args }}
 
+[windows]
+test *args:
+    cargo test --no-fail-fast {{ args }}
+
 bench *args:
     cargo bench --workspace --bench '*' {{ args }}
 

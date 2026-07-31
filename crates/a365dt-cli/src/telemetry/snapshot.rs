@@ -1,11 +1,13 @@
-use std::{collections::BTreeMap, fs, io, path::PathBuf, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
+use sqlx::SqliteConnection;
 use tokio::sync::mpsc;
 
 use super::{
-	Error, InvocationId, Operation, Paths, Recorder, is_disabled,
-	read_stats_locked, storage_error,
+	InvocationId, Operation, Recorder,
+	storage::{Store, read_error},
 };
+use crate::{error::Error, sqlite};
 
 pub struct Snapshot {
 	pub enabled: bool,
@@ -15,10 +17,13 @@ pub struct Snapshot {
 	pub schema_version: u16,
 	pub first_recorded_at: Option<u64>,
 	pub last_recorded_at: Option<u64>,
+	pub first_download_at: Option<u64>,
+	pub last_download_at: Option<u64>,
 	pub last_enabled_at: Option<u64>,
 	pub last_disabled_at: Option<u64>,
 	pub last_cleared_at: Option<u64>,
 	pub counters: BTreeMap<String, u64>,
+	pub samples: BTreeMap<String, Vec<u64>>,
 	pub performance: Vec<PerformanceMetric>,
 }
 
@@ -36,49 +41,194 @@ pub struct Overhead {
 	pub added_ns: u64,
 }
 
-pub(super) fn capture(paths: &Paths) -> Result<Snapshot, Error> {
-	let enabled = !is_disabled(paths)?;
-	let stats = read_stats_locked(paths, enabled)?;
-	let data_bytes = match fs::metadata(&paths.data) {
-		Ok(metadata) => Some(metadata.len()),
-		Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-		Err(error) => {
-			return Err(storage_error(
-				"Could not inspect the local telemetry data.",
-				error,
-			));
-		}
-	};
-	let performance = stats
-		.usage
-		.performance
-		.iter()
-		.map(|(operation, metric)| {
-			let mut samples = metric.samples_us().to_vec();
-			samples.sort_unstable();
-			PerformanceMetric {
-				operation: operation.to_owned(),
-				count: metric.count(),
-				total_us: metric.total_us(),
-				work_units: metric.work_units(),
-				samples_us: samples,
-			}
-		})
-		.collect();
+pub(super) async fn capture(store: &Store) -> Result<Snapshot, Error> {
+	let mut transaction = store.pool.begin().await.map_err(read_error)?;
+	let (enabled, last_enabled_at, last_disabled_at, last_cleared_at) =
+		sqlx::query_as::<_, (bool, Option<i64>, Option<i64>, Option<i64>)>(
+			"SELECT enabled, last_enabled_at_ms, last_disabled_at_ms, \
+			 last_cleared_at_ms FROM collection_state WHERE singleton = 1",
+		)
+		.fetch_one(&mut *transaction)
+		.await
+		.map_err(read_error)?;
+	let (first_recorded_at, last_recorded_at) =
+		sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+			"SELECT MIN(observed_at_ms), MAX(observed_at_ms) FROM (\
+			 SELECT observed_at_ms FROM command_events UNION ALL \
+			 SELECT observed_at_ms FROM series_selection_events UNION ALL \
+			 SELECT observed_at_ms FROM download_batches UNION ALL \
+			 SELECT observed_at_ms FROM performance_events\
+			 )",
+		)
+		.fetch_one(&mut *transaction)
+		.await
+		.map_err(read_error)?;
+	let (first_download_at, last_download_at) =
+		sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+			"SELECT MIN(observed_at_ms), MAX(observed_at_ms) \
+			 FROM download_batches",
+		)
+		.fetch_one(&mut *transaction)
+		.await
+		.map_err(read_error)?;
+	let schema_version = sqlx::query_scalar::<_, i64>(
+		"SELECT MAX(version) FROM _sqlx_migrations",
+	)
+	.fetch_one(&mut *transaction)
+	.await
+	.map_err(read_error)?;
+	let counters = counters(&mut transaction).await?;
+	let samples = download_samples(&mut transaction).await?;
+	let performance = performance(&mut transaction).await?;
+	transaction.commit().await.map_err(read_error)?;
 	Ok(Snapshot {
 		enabled,
-		data_path: paths.data.clone(),
-		disabled_path: paths.disabled.clone(),
-		data_bytes,
-		schema_version: stats.schema_version,
-		first_recorded_at: stats.usage.first_recorded_at,
-		last_recorded_at: stats.usage.last_recorded_at,
-		last_enabled_at: stats.last_enabled_at,
-		last_disabled_at: stats.last_disabled_at,
-		last_cleared_at: stats.last_cleared_at,
-		counters: stats.usage.counters,
+		data_path: store.paths.data.clone(),
+		disabled_path: store.paths.disabled.clone(),
+		data_bytes: Some(sqlite::size(&store.paths.data).map_err(read_error)?),
+		schema_version: u16::try_from(schema_version).map_err(read_error)?,
+		first_recorded_at: timestamp(first_recorded_at)?,
+		last_recorded_at: timestamp(last_recorded_at)?,
+		first_download_at: timestamp(first_download_at)?,
+		last_download_at: timestamp(last_download_at)?,
+		last_enabled_at: timestamp(last_enabled_at)?,
+		last_disabled_at: timestamp(last_disabled_at)?,
+		last_cleared_at: timestamp(last_cleared_at)?,
+		counters,
+		samples,
 		performance,
 	})
+}
+
+async fn counters(
+	connection: &mut SqliteConnection,
+) -> Result<BTreeMap<String, u64>, Error> {
+	let mut counters = BTreeMap::new();
+	for (command, outcome, count) in sqlx::query_as::<_, (String, String, i64)>(
+		"SELECT command, outcome, COUNT(*) FROM command_events \
+			 GROUP BY command, outcome",
+	)
+	.fetch_all(&mut *connection)
+	.await
+	.map_err(read_error)?
+	{
+		counters.insert(
+			format!("commands.{}.{}", command.replace('_', "."), outcome),
+			u64_from(count)?,
+		);
+	}
+	for (result, count) in sqlx::query_as::<_, (String, i64)>(
+		"SELECT catalogue_result, COUNT(*) FROM series_selection_events \
+		 WHERE catalogue_result IS NOT NULL GROUP BY catalogue_result",
+	)
+	.fetch_all(&mut *connection)
+	.await
+	.map_err(read_error)?
+	{
+		let key = match result.as_str() {
+			"hit" => "catalogue.hits",
+			"miss" => "catalogue.misses",
+			value => {
+				return Err(read_error(format!(
+					"unknown catalogue result: {value}"
+				)));
+			}
+		};
+		counters.insert(key.into(), u64_from(count)?);
+	}
+	let batches =
+		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM download_batches")
+			.fetch_one(&mut *connection)
+			.await
+			.map_err(read_error)?;
+	if batches > 0 {
+		counters.insert("downloads.batches".into(), u64_from(batches)?);
+	}
+	for (status, count) in sqlx::query_as::<_, (String, i64)>(
+		"SELECT status, COUNT(*) FROM download_outcomes GROUP BY status",
+	)
+	.fetch_all(&mut *connection)
+	.await
+	.map_err(read_error)?
+	{
+		counters
+			.insert(format!("downloads.episodes.{status}"), u64_from(count)?);
+	}
+	let (downloaded, bytes) = sqlx::query_as::<_, (i64, i64)>(
+		"SELECT COUNT(*), COALESCE(SUM(downloaded_bytes), 0) \
+		 FROM download_outcomes WHERE downloaded_bytes IS NOT NULL",
+	)
+	.fetch_one(&mut *connection)
+	.await
+	.map_err(read_error)?;
+	if downloaded > 0 {
+		counters.insert("downloads.bytes".into(), u64_from(bytes)?);
+	}
+	Ok(counters)
+}
+
+async fn download_samples(
+	connection: &mut SqliteConnection,
+) -> Result<BTreeMap<String, Vec<u64>>, Error> {
+	let samples = sqlx::query_scalar::<_, i64>(
+		"SELECT duration_us FROM download_batches \
+		 ORDER BY observed_at_ms DESC, id DESC LIMIT 101",
+	)
+	.fetch_all(&mut *connection)
+	.await
+	.map_err(read_error)?
+	.into_iter()
+	.map(|duration| u64_from(duration).map(|duration| duration / 1_000))
+	.collect::<Result<Vec<_>, _>>()?;
+	Ok(if samples.is_empty() {
+		BTreeMap::new()
+	} else {
+		BTreeMap::from([("downloads.batch_duration_ms".into(), samples)])
+	})
+}
+
+async fn performance(
+	connection: &mut SqliteConnection,
+) -> Result<Vec<PerformanceMetric>, Error> {
+	let mut samples = BTreeMap::<String, Vec<u64>>::new();
+	for (operation, duration) in sqlx::query_as::<_, (String, i64)>(
+		"SELECT operation, duration_us FROM (\
+		 SELECT operation, duration_us, ROW_NUMBER() OVER (\
+		 PARTITION BY operation ORDER BY observed_at_ms DESC, id DESC\
+		 ) AS position FROM performance_events\
+		 ) WHERE position <= 101 ORDER BY operation, position",
+	)
+	.fetch_all(&mut *connection)
+	.await
+	.map_err(read_error)?
+	{
+		samples
+			.entry(operation)
+			.or_default()
+			.push(u64_from(duration)?);
+	}
+	let mut performance = Vec::new();
+	for (operation, count, total_us, work_units) in
+		sqlx::query_as::<_, (String, i64, i64, i64)>(
+			"SELECT operation, COUNT(*), SUM(duration_us), \
+			 COALESCE(SUM(work_units), 0) FROM performance_events \
+			 GROUP BY operation ORDER BY operation",
+		)
+		.fetch_all(&mut *connection)
+		.await
+		.map_err(read_error)?
+	{
+		let mut recent = samples.remove(&operation).unwrap_or_default();
+		recent.sort_unstable();
+		performance.push(PerformanceMetric {
+			operation,
+			count: u64_from(count)?,
+			total_us: u64_from(total_us)?,
+			work_units: u64_from(work_units)?,
+			samples_us: recent,
+		});
+	}
+	Ok(performance)
 }
 
 pub(super) fn benchmark_overhead(invocation_id: InvocationId) -> Overhead {
@@ -106,4 +256,14 @@ fn median_overhead(recorder: &Recorder) -> u64 {
 	}
 	samples.sort_unstable();
 	samples[samples.len() / 2]
+}
+
+fn timestamp(value: Option<i64>) -> Result<Option<u64>, Error> {
+	value
+		.map(|value| u64_from(value).map(|value| value / 1_000))
+		.transpose()
+}
+
+fn u64_from(value: i64) -> Result<u64, Error> {
+	u64::try_from(value).map_err(read_error)
 }
