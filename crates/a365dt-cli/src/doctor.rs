@@ -23,7 +23,7 @@ pub async fn run(
 ) -> ExitCode {
 	let (server, update, cache) =
 		tokio::join!(server::probe(), startup::check(store), store.inspect());
-	let telemetry = telemetry_writer.snapshot();
+	let telemetry = telemetry_writer.snapshot().await;
 	let mut sections = vec![
 		Section {
 			title: "Health",

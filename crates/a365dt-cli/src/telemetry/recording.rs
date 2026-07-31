@@ -6,11 +6,16 @@ use std::{
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::performance::Work;
 use crate::{
 	api::Series,
 	download::{self, Status},
 };
+
+#[derive(Clone, Copy)]
+enum Work {
+	Items(u64),
+	None,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
@@ -136,16 +141,16 @@ impl fmt::Display for InvocationId {
 }
 
 impl Command {
-	pub(super) fn name(self) -> &'static str {
+	pub(super) fn database_name(self) -> &'static str {
 		match self {
-			Self::CachePrune => "cache prune",
+			Self::CachePrune => "cache_prune",
 			Self::Completions => "completions",
 			Self::Doctor => "doctor",
 			Self::Download => "download",
 			Self::Stats => "stats",
-			Self::TelemetryDisable => "telemetry disable",
-			Self::TelemetryEnable => "telemetry enable",
-			Self::TelemetryShow => "telemetry show",
+			Self::TelemetryDisable => "telemetry_disable",
+			Self::TelemetryEnable => "telemetry_enable",
+			Self::TelemetryShow => "telemetry_show",
 			Self::Update => "update",
 		}
 	}
@@ -157,6 +162,16 @@ impl CommandOutcome {
 			Self::Cancelled => "cancelled",
 			Self::Failure => "failure",
 			Self::Success => "success",
+		}
+	}
+}
+
+impl CatalogueUse {
+	pub(super) fn database_name(self) -> Option<&'static str> {
+		match self {
+			Self::Bypassed => None,
+			Self::Hit => Some("hit"),
+			Self::Miss => Some("miss"),
 		}
 	}
 }

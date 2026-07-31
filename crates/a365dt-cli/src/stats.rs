@@ -15,7 +15,7 @@ use metrics::{Aggregate, aggregate};
 pub async fn run(store: &Store, telemetry: &TelemetryWriter) {
 	ui::heading("a365dt stats");
 	let cache = store.inspect().await;
-	let telemetry = telemetry.snapshot();
+	let telemetry = telemetry.snapshot().await;
 	let rows = statistic_checks(&cache, &telemetry)
 		.iter()
 		.map(Check::row)

@@ -20,12 +20,24 @@ const REFRESH_WORKER: &str = "cache::process_tests::worker_stale_refresh";
 const DELETE_WORKER: &str = "cache::process_tests::worker_stale_delete";
 const RELEASE_WORKER: &str = "cache::process_tests::worker_release_completion";
 const LOCK_WORKER: &str = "cache::process_tests::worker_lifecycle_lock";
+const TELEMETRY_FIRST_OPEN_WORKER: &str =
+	"telemetry::process_tests::worker_concurrent_first_open";
+const TELEMETRY_DRAIN_WORKER: &str =
+	"telemetry::process_tests::worker_writer_drain";
+const TELEMETRY_DRAIN_VERIFY_WORKER: &str =
+	"telemetry::process_tests::worker_verify_writer_drain";
+const TELEMETRY_STATE_WORKER: &str =
+	"telemetry::process_tests::worker_state_batches";
+const TELEMETRY_CONTROL_WORKER: &str =
+	"telemetry::process_tests::worker_state_control";
 
 #[tokio::test]
-async fn cache_process_safety() {
+async fn sqlite_process_safety() {
 	concurrent_first_open().await;
 	revision_interleaving().await;
 	lifecycle_rebuild().await;
+	telemetry_writer_drain();
+	telemetry_state_rechecks();
 }
 
 async fn concurrent_first_open() {
@@ -52,6 +64,25 @@ async fn concurrent_first_open() {
 		super::Inspection::Missing { .. }
 	));
 	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+
+	let directory = temporary_directory("telemetry-first-open");
+	fs::create_dir_all(&directory).unwrap();
+	fs::write(directory.join("telemetry.json"), b"legacy").unwrap();
+	fs::write(directory.join("telemetry.lock"), b"legacy").unwrap();
+	fs::write(directory.join("telemetry-disabled"), b"123").unwrap();
+	let mut first = Worker::spawn(TELEMETRY_FIRST_OPEN_WORKER, &directory);
+	let mut second = Worker::spawn(TELEMETRY_FIRST_OPEN_WORKER, &directory);
+	first.send("OPEN");
+	second.send("OPEN");
+	first.wait_for("OPENED");
+	second.wait_for("OPENED");
+	first.finish();
+	second.finish();
+	assert!(directory.join("telemetry.sqlite").exists());
+	assert!(!directory.join("telemetry.json").exists());
+	assert!(!directory.join("telemetry.lock").exists());
+	assert!(!directory.join("telemetry-disabled").exists());
 	fs::remove_dir_all(directory).unwrap();
 }
 
@@ -277,6 +308,54 @@ async fn lifecycle_rebuild() {
 		super::Inspection::Missing { .. }
 	));
 	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+fn telemetry_writer_drain() {
+	let directory = temporary_directory("telemetry-drain");
+	fs::create_dir_all(&directory).unwrap();
+	let mut first = Worker::spawn(TELEMETRY_DRAIN_WORKER, &directory);
+	let mut second = Worker::spawn(TELEMETRY_DRAIN_WORKER, &directory);
+	first.wait_for("READY");
+	second.wait_for("READY");
+	first.send("RECORD");
+	second.send("RECORD");
+	first.wait_for("RECORDED");
+	second.wait_for("RECORDED");
+	first.send("FINISH");
+	second.send("FINISH");
+	first.wait_for("FINISHED");
+	second.wait_for("FINISHED");
+	first.finish();
+	second.finish();
+	Worker::spawn(TELEMETRY_DRAIN_VERIFY_WORKER, &directory).finish();
+	fs::remove_dir_all(directory).unwrap();
+}
+
+fn telemetry_state_rechecks() {
+	let directory = temporary_directory("telemetry-state");
+	fs::create_dir_all(&directory).unwrap();
+	let mut batches = Worker::spawn(TELEMETRY_STATE_WORKER, &directory);
+	let mut control = Worker::spawn(TELEMETRY_CONTROL_WORKER, &directory);
+	batches.wait_for("READY");
+	control.wait_for("READY");
+
+	control.send("DISABLE");
+	control.wait_for("DISABLED");
+	batches.send("DISABLED_BATCH");
+	batches.wait_for("DISABLED_BATCHED");
+	control.send("ENABLE");
+	control.wait_for("ENABLED");
+	batches.send("ENABLED_BATCH");
+	batches.wait_for("ENABLED_BATCHED");
+	control.send("CLEAR");
+	control.wait_for("CLEARED");
+	batches.send("WATERMARK_BATCH");
+	batches.wait_for("VERIFIED");
+
+	control.send("FINISH");
+	batches.finish();
+	control.finish();
 	fs::remove_dir_all(directory).unwrap();
 }
 

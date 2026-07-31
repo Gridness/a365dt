@@ -1,28 +1,21 @@
 use std::{
-	collections::HashMap,
 	fs::{self, File, OpenOptions},
 	io,
 	path::{Path, PathBuf},
 	sync::Arc,
-	time::Duration,
 };
 
-use sqlx::{
-	SqlitePool,
-	migrate::Migrator,
-	sqlite::{
-		SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode,
-		SqlitePoolOptions, SqliteSynchronous,
-	},
-};
+use sqlx::{SqlitePool, migrate::Migrator};
 
-use crate::error::Error;
+use crate::{
+	error::Error,
+	sqlite::{self, Durability, MigrationError},
+};
 
 pub(super) const FILE: &str = "cache.sqlite";
 const LOCK_FILE: &str = "cache.lock";
 const INITIALIZATION_LOCK_FILE: &str = "cache-initialization.lock";
 const LEGACY_FILES: [&str; 2] = ["series.json", "latest-release.json"];
-const TIMEOUT: Duration = Duration::from_secs(5);
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations/cache");
 
 #[derive(Clone, Debug)]
@@ -85,7 +78,7 @@ pub(super) async fn open(directory: &Path) -> Result<Database, OpenFailure> {
 pub(super) async fn rebuild(directory: &Path) -> Result<(), Error> {
 	let cache_lock = exclusive_lock(directory)?;
 	let path = directory.join(FILE);
-	for candidate in files(&path) {
+	for candidate in sqlite::files(&path) {
 		match fs::remove_file(&candidate) {
 			Ok(()) => {}
 			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -123,15 +116,8 @@ pub(super) fn retire_legacy_files(directory: &Path) -> Result<(), Error> {
 }
 
 pub(super) fn size(path: &Path) -> Result<u64, Error> {
-	files(path).into_iter().try_fold(0_u64, |total, path| {
-		match fs::metadata(&path) {
-			Ok(metadata) => Ok(total.saturating_add(metadata.len())),
-			Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(total),
-			Err(error) => {
-				Err(read_error(format!("{}: {error}", path.display())))
-			}
-		}
-	})
+	sqlite::size(path)
+		.map_err(|error| read_error(format!("{}: {error}", path.display())))
 }
 
 async fn open_database(
@@ -139,23 +125,13 @@ async fn open_database(
 	cache_lock: Arc<File>,
 	mode: OpenMode,
 ) -> Result<Database, OpenFailure> {
-	let mut options = SqliteConnectOptions::new()
-		.filename(&path)
-		.create_if_missing(true)
-		.locking_mode(SqliteLockingMode::Normal)
-		.synchronous(SqliteSynchronous::Normal)
-		.shared_cache(false)
-		.foreign_keys(true)
-		.busy_timeout(TIMEOUT);
-	if matches!(mode, OpenMode::Initialize) {
-		options = options.journal_mode(SqliteJournalMode::Wal);
-	}
-	let pool = SqlitePoolOptions::new()
-		.max_connections(1)
-		.acquire_timeout(TIMEOUT)
-		.connect_with(options)
-		.await
-		.map_err(|error| open_failure(&path, error, FailureContext::Opening))?;
+	let pool = sqlite::connect(
+		&path,
+		matches!(mode, OpenMode::Initialize),
+		Durability::Cache,
+	)
+	.await
+	.map_err(|error| open_failure(&path, error, FailureContext::Opening))?;
 	if let Err(failure) = migrate(&pool, &path).await {
 		pool.close().await;
 		return Err(failure);
@@ -171,78 +147,14 @@ async fn open_database(
 }
 
 async fn migrate(pool: &SqlitePool, path: &Path) -> Result<(), OpenFailure> {
-	let mut transaction = pool
-		.begin_with("BEGIN IMMEDIATE")
+	let (transaction, _) = sqlite::begin_migrations(pool, &MIGRATOR, "cache")
 		.await
-		.map_err(|error| open_failure(path, error, FailureContext::Opening))?;
-	sqlx::raw_sql(
-		"CREATE TABLE IF NOT EXISTS _sqlx_migrations (\
-		 version BIGINT PRIMARY KEY, \
-		 description TEXT NOT NULL, \
-		 installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, \
-		 success BOOLEAN NOT NULL, \
-		 checksum BLOB NOT NULL, \
-		 execution_time BIGINT NOT NULL\
-		 )",
-	)
-	.execute(&mut *transaction)
-	.await
-	.map_err(|error| open_failure(path, error, FailureContext::Schema))?;
-	let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
-		"SELECT version, checksum, success FROM _sqlx_migrations",
-	)
-	.fetch_all(&mut *transaction)
-	.await
-	.map_err(|error| open_failure(path, error, FailureContext::Schema))?
-	.into_iter()
-	.map(|(version, checksum, success)| (version, (checksum, success)))
-	.collect::<HashMap<_, _>>();
-	if applied
-		.keys()
-		.any(|version| !MIGRATOR.version_exists(*version))
-	{
-		return Err(schema_failure(path, "unknown cache migration"));
-	}
-	for migration in MIGRATOR
-		.iter()
-		.filter(|migration| migration.migration_type.is_up_migration())
-	{
-		if migration.no_tx {
-			return Err(schema_failure(
-				path,
-				"cache migrations must be transactional",
-			));
-		}
-		if let Some((checksum, success)) = applied.get(&migration.version) {
-			if !success || checksum.as_slice() != migration.checksum.as_ref() {
-				return Err(schema_failure(
-					path,
-					format!(
-						"cache migration {} does not match",
-						migration.version
-					),
-				));
-			}
-			continue;
-		}
-		sqlx::raw_sql(migration.sql.as_str())
-			.execute(&mut *transaction)
-			.await
-			.map_err(|error| {
+		.map_err(|error| match error {
+			MigrationError::Database(error) => {
 				open_failure(path, error, FailureContext::Schema)
-			})?;
-		sqlx::query(
-			"INSERT INTO _sqlx_migrations \
-			 (version, description, success, checksum, execution_time) \
-			 VALUES (?, ?, TRUE, ?, 0)",
-		)
-		.bind(migration.version)
-		.bind(migration.description.as_ref())
-		.bind(migration.checksum.as_ref())
-		.execute(&mut *transaction)
-		.await
-		.map_err(|error| open_failure(path, error, FailureContext::Schema))?;
-	}
+			}
+			MigrationError::Invalid(detail) => schema_failure(path, detail),
+		})?;
 	transaction
 		.commit()
 		.await
@@ -312,28 +224,14 @@ fn lock_file(directory: &Path, name: &str) -> Result<File, Error> {
 		})
 }
 
-fn files(path: &Path) -> [PathBuf; 3] {
-	[
-		path.to_owned(),
-		sidecar(path, "-wal"),
-		sidecar(path, "-shm"),
-	]
-}
-
 fn remove_new_database(path: &Path) {
-	for path in files(path) {
+	for path in sqlite::files(path) {
 		if let Err(error) = fs::remove_file(path)
 			&& error.kind() != io::ErrorKind::NotFound
 		{
 			break;
 		}
 	}
-}
-
-fn sidecar(path: &Path, suffix: &str) -> PathBuf {
-	let mut path = path.as_os_str().to_owned();
-	path.push(suffix);
-	PathBuf::from(path)
 }
 
 fn open_failure(
