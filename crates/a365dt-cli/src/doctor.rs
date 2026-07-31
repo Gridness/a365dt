@@ -79,6 +79,12 @@ fn health_checks(
 			Check::new("Series cache", "Stale", Status::Warning)
 				.remedy("Run a title search to refresh it")
 		}
+		CacheInspection::Unrefreshed { .. } => {
+			Check::new("Series cache", "Not fully refreshed", Status::Warning)
+				.remedy(
+					"Run a title search and wait for the catalogue to refresh",
+				)
+		}
 		CacheInspection::Missing { .. } => {
 			Check::new("Series cache", "Not created yet", Status::Info)
 				.remedy("Run a title search to create it")
@@ -184,6 +190,17 @@ fn debug_checks(
 				"{} old · TTL {} · {}",
 				HumanDuration(*age),
 				HumanDuration(MAX_AGE),
+				HumanBytes(*bytes)
+			),
+		),
+		CacheInspection::Unrefreshed {
+			path,
+			series,
+			bytes,
+		} => (
+			path,
+			format!(
+				"Not fully refreshed · {series} Series · {}",
 				HumanBytes(*bytes)
 			),
 		),

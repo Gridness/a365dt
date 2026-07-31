@@ -355,7 +355,7 @@ fn deduplicate_first(series: Vec<Series>) -> Vec<Series> {
 	let mut seen = HashSet::new();
 	series
 		.into_iter()
-		.filter(|series| seen.insert(series.id))
+		.filter(|series| !series.title.is_empty() && seen.insert(series.id))
 		.collect()
 }
 
