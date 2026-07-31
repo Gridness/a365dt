@@ -101,7 +101,12 @@ fn title_query(args: &Args) -> Option<Vec<String>> {
 			("stats", query.clone())
 		}
 		Some(Commands::Telemetry {
-			command: TelemetryCommand::Clear { query },
+			command:
+				TelemetryCommand::Clear {
+					yes: false,
+					since: None,
+					query,
+				},
 		}) if !query.is_empty() => (
 			"telemetry",
 			std::iter::once("clear".to_owned())

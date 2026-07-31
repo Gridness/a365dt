@@ -131,49 +131,9 @@ async fn run(
 	mut watermark: Option<u64>,
 ) -> Result<(), Error> {
 	let mut first_error = None;
-	loop {
-		let first = tokio::select! {
-			observation = observations.recv() => {
-				let Some(observation) = observation else {
-					break;
-				};
-				observation
-			}
-			_ = &mut finishing => {
-				observations.close();
-				let mut batch = Vec::new();
-				while let Some(observation) = observations.recv().await {
-					batch.push(observation);
-				}
-				if !batch.is_empty() {
-					remember_failure(
-						store.commit(&mut watermark, batch).await,
-						&mut first_error,
-					);
-				}
-				break;
-			}
-		};
-		let mut batch = vec![first];
-		let timer = sleep(BATCH_INTERVAL);
-		tokio::pin!(timer);
-		let closed = loop {
-			tokio::select! {
-				biased;
-				_ = &mut finishing => {
-					observations.close();
-					while let Some(observation) = observations.recv().await {
-						batch.push(observation);
-					}
-					break true;
-				},
-				() = &mut timer => break false,
-				observation = observations.recv() => match observation {
-					Some(observation) => batch.push(observation),
-					None => break true,
-				},
-			}
-		};
+	while let Some((batch, closed)) =
+		receive_batch(&mut observations, &mut finishing).await
+	{
 		remember_failure(
 			store.commit(&mut watermark, batch).await,
 			&mut first_error,
@@ -183,6 +143,44 @@ async fn run(
 		}
 	}
 	first_error.map_or(Ok(()), Err)
+}
+
+async fn receive_batch(
+	observations: &mut mpsc::UnboundedReceiver<Observation>,
+	finishing: &mut oneshot::Receiver<()>,
+) -> Option<(Vec<Observation>, bool)> {
+	let first = tokio::select! {
+		observation = observations.recv() => observation?,
+		_ = &mut *finishing => {
+			observations.close();
+			let mut batch = Vec::new();
+			while let Some(observation) = observations.recv().await {
+				batch.push(observation);
+			}
+			return (!batch.is_empty()).then_some((batch, true));
+		}
+	};
+	let mut batch = vec![first];
+	let timer = sleep(BATCH_INTERVAL);
+	tokio::pin!(timer);
+	let closed = loop {
+		tokio::select! {
+			biased;
+			_ = &mut *finishing => {
+				observations.close();
+				while let Some(observation) = observations.recv().await {
+					batch.push(observation);
+				}
+				break true;
+			},
+			() = &mut timer => break false,
+			observation = observations.recv() => match observation {
+				Some(observation) => batch.push(observation),
+				None => break true,
+			},
+		}
+	};
+	Some((batch, closed))
 }
 
 fn remember_failure(

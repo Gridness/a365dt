@@ -7,13 +7,18 @@ use std::{
 use sqlx::{Sqlite, SqlitePool, Transaction, migrate::Migrator};
 
 use super::{
-	Observation, ObservationKind, Paths, now_ms, recording::DownloadOutcome,
+	Observation, ObservationKind, Paths,
+	recording::{DownloadOutcome, now_ms},
 };
 use crate::{
 	download::Status,
 	error::Error,
 	sqlite::{self, Durability, MigrationError, OpenMode},
 };
+
+mod clearing;
+
+pub(super) use clearing::ClearRange;
 
 const INITIALIZATION_LOCK: &str = "telemetry-initialization.lock";
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations/telemetry");
@@ -137,33 +142,6 @@ impl Store {
 		}) {
 			insert(&mut transaction, observation).await?;
 		}
-		transaction.commit().await.map_err(write_error)
-	}
-
-	pub(super) async fn clear(&self) -> Result<(), Error> {
-		let cleared_at_ms = i64_from(now_ms(), "clear timestamp")?;
-		let mut transaction = self
-			.pool
-			.begin_with("BEGIN IMMEDIATE")
-			.await
-			.map_err(write_error)?;
-		sqlx::raw_sql(
-			"DELETE FROM command_events;\
-			 DELETE FROM series_selection_events;\
-			 DELETE FROM download_batches;\
-			 DELETE FROM performance_events;",
-		)
-		.execute(&mut *transaction)
-		.await
-		.map_err(write_error)?;
-		sqlx::query(
-			"UPDATE collection_state SET last_cleared_at_ms = ? \
-			 WHERE singleton = 1",
-		)
-		.bind(cleared_at_ms)
-		.execute(&mut *transaction)
-		.await
-		.map_err(write_error)?;
 		transaction.commit().await.map_err(write_error)
 	}
 

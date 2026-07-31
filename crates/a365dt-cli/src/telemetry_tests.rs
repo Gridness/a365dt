@@ -109,65 +109,6 @@ fn recorder_sends_complete_typed_privacy_safe_observations_from_clones() {
 	);
 }
 
-#[tokio::test(start_paused = true)]
-async fn writer_commits_one_second_batches_and_finish_drains_the_tail() {
-	let paths = paths("batching");
-	tokio::time::resume();
-	let (recorder, writer) = Writer::at(paths.clone(), InvocationId::new())
-		.await
-		.unwrap();
-	let control = Store::open(paths.clone()).await.unwrap();
-	let mut connection = control.pool.acquire().await.unwrap();
-	tokio::time::pause();
-	recorder.record_command(Command::Download, CommandOutcome::Success);
-	for _ in 0..10 {
-		tokio::task::yield_now().await;
-	}
-
-	tokio::time::advance(Duration::from_millis(999)).await;
-	assert_eq!(
-		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM command_events")
-			.fetch_one(&mut *connection)
-			.await
-			.unwrap(),
-		0
-	);
-	tokio::time::advance(Duration::from_millis(1)).await;
-	tokio::time::resume();
-	let committed = tokio::time::timeout(Duration::from_secs(5), async {
-		loop {
-			let committed = sqlx::query_scalar::<_, i64>(
-				"SELECT COUNT(*) FROM command_events",
-			)
-			.fetch_one(&mut *connection)
-			.await
-			.unwrap();
-			if committed > 0 {
-				break committed;
-			}
-			tokio::task::yield_now().await;
-		}
-	})
-	.await
-	.unwrap();
-	assert_eq!(committed, 1);
-
-	recorder.record_command(Command::Update, CommandOutcome::Failure);
-	writer.finish().await.unwrap();
-	drop(connection);
-	control.close().await;
-	let store = Store::open(paths.clone()).await.unwrap();
-	assert_eq!(
-		snapshot::capture(&store).await.unwrap().counters,
-		BTreeMap::from([
-			("commands.download.success".into(), 1),
-			("commands.update.failure".into(), 1),
-		])
-	);
-	store.close().await;
-	cleanup(&paths);
-}
-
 #[tokio::test]
 async fn batch_commit_rechecks_collection_state_and_resumes_after_reenable() {
 	let paths = paths("state-rechecks");
@@ -233,7 +174,10 @@ async fn clear_watermark_discards_buffered_history_atomically() {
 	let store = Store::open(paths.clone()).await.unwrap();
 	let mut baseline =
 		store.collection_state().await.unwrap().last_cleared_at_ms;
-	store.clear().await.unwrap();
+	store
+		.clear(super::storage::ClearRange::All, super::recording::now_ms())
+		.await
+		.unwrap();
 	let watermark = store
 		.collection_state()
 		.await

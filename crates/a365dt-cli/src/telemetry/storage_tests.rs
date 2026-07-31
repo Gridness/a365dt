@@ -2,7 +2,7 @@ use std::{fs, process, time::SystemTime};
 
 use pretty_assertions::assert_eq;
 
-use super::Store;
+use super::{ClearRange, CollectionState, Store};
 use crate::{
 	download::Status,
 	telemetry::{
@@ -218,13 +218,70 @@ async fn stores_complete_typed_observations() {
 			vec![("search.rank".into(), 1, 50, 30_000, vec![50])],
 		)
 	);
-	store.clear().await.unwrap();
+	store.clear(ClearRange::All, 50_000).await.unwrap();
 	assert!(
 		crate::telemetry::snapshot::capture(&store)
 			.await
 			.unwrap()
 			.counters
 			.is_empty()
+	);
+
+	store.close().await;
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn partial_clear_is_inclusive_cascades_and_advances_its_watermark() {
+	let paths = paths("partial-clear");
+	let store = Store::open(paths.clone()).await.unwrap();
+	sqlx::raw_sql(
+		"INSERT INTO command_events(invocation_id, observed_at_ms, command, outcome)
+		 VALUES
+		 ('00000000-0000-7000-8000-000000000000', 9, 'download', 'success'),
+		 ('00000000-0000-7000-8000-000000000000', 10, 'download', 'success'),
+		 ('00000000-0000-7000-8000-000000000000', 30, 'download', 'success');
+		 INSERT INTO series_selection_events(
+		  invocation_id, observed_at_ms, series_id, series_title)
+		 SELECT invocation_id, observed_at_ms, 365, 'Series' FROM command_events;
+		 INSERT INTO download_batches(
+		  invocation_id, observed_at_ms, series_id, series_title, duration_us)
+		 SELECT invocation_id, observed_at_ms, 365, 'Series', 1 FROM command_events;
+		 INSERT INTO download_outcomes(batch_id, status, downloaded_bytes)
+		 SELECT id, 'downloaded', 1 FROM download_batches;
+		 INSERT INTO performance_events(
+		  invocation_id, observed_at_ms, operation, duration_us)
+		 SELECT invocation_id, observed_at_ms, 'search.rank', 1 FROM command_events;",
+	)
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	let before = store.collection_state().await.unwrap();
+
+	store.clear(ClearRange::Since(10), 20).await.unwrap();
+	store.clear(ClearRange::Since(100), 21).await.unwrap();
+	store.clear(ClearRange::Since(100), 19).await.unwrap();
+
+	assert_eq!(
+		(
+			stored_event_times(&store).await,
+			store.collection_state().await.unwrap()
+		),
+		(
+			(
+				vec![
+					("command".into(), 9),
+					("download".into(), 9),
+					("performance".into(), 9),
+					("series".into(), 9),
+				],
+				1,
+			),
+			CollectionState {
+				last_cleared_at_ms: Some(21),
+				..before
+			}
+		)
 	);
 
 	store.close().await;
@@ -300,6 +357,25 @@ async fn rolls_back_incomplete_download_batches_and_enforces_scalars() {
 
 	store.close().await;
 	cleanup(&paths);
+}
+
+async fn stored_event_times(store: &Store) -> (Vec<(String, i64)>, i64) {
+	(
+		sqlx::query_as(
+			"SELECT 'command', observed_at_ms FROM command_events \
+			 UNION ALL SELECT 'series', observed_at_ms FROM series_selection_events \
+			 UNION ALL SELECT 'download', observed_at_ms FROM download_batches \
+			 UNION ALL SELECT 'performance', observed_at_ms FROM performance_events \
+			 ORDER BY 1, 2",
+		)
+		.fetch_all(&store.pool)
+		.await
+		.unwrap(),
+		sqlx::query_scalar("SELECT COUNT(*) FROM download_outcomes")
+			.fetch_one(&store.pool)
+			.await
+			.unwrap(),
+	)
 }
 
 fn paths(name: &str) -> Paths {
