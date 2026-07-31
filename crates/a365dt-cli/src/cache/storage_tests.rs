@@ -3,7 +3,8 @@ use std::{fs, process, time::SystemTime};
 use pretty_assertions::assert_eq;
 
 use super::{
-	CompletedRelease, RebuildPermission, Release, ReleaseState, Store, prune_at,
+	CompletedRelease, Inspection, RebuildPermission, Release, ReleaseState,
+	Store, prune_at,
 };
 use crate::{
 	api::{Episode, Series},
@@ -101,6 +102,56 @@ async fn stores_the_catalogue_projection_without_episode_or_poster_details() {
 			.collect::<Vec<_>>(),
 		vec![expected]
 	);
+	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn distinguishes_discovered_series_from_a_refreshed_catalogue() {
+	let directory = temporary_directory("cache-discovery");
+	let path = directory.join("cache.sqlite");
+	let store = Store::at(directory.clone()).await;
+	let (_, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	writer.discover(vec![series(1, "Discovered")]);
+	writer.finish().await.unwrap();
+
+	let inspection = store.inspect().await;
+	let Inspection::Unrefreshed {
+		path: actual_path,
+		series,
+		..
+	} = inspection
+	else {
+		panic!("expected an unrefreshed cache, got {inspection:?}");
+	};
+	assert_eq!((actual_path, series), (path, 1));
+
+	store.close().await;
+	fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn refresh_skips_untitled_series_without_rolling_back_the_catalogue() {
+	let directory = temporary_directory("cache-untitled-series");
+	let store = Store::at(directory.clone()).await;
+	let (_, writer) = store
+		.load_catalogue()
+		.await
+		.unwrap()
+		.into_session(&store, Recorder::default());
+	writer.commit_refresh(vec![series(1, ""), series(2, "Cacheable")]);
+	writer.finish().await.unwrap();
+
+	let inspection = store.inspect().await;
+	let Inspection::Ready { series, .. } = inspection else {
+		panic!("expected a refreshed cache, got {inspection:?}");
+	};
+	assert_eq!(series, 1);
+
 	store.close().await;
 	fs::remove_dir_all(directory).unwrap();
 }

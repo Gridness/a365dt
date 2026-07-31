@@ -162,6 +162,24 @@ fn cache_statistics(cache: &CacheInspection) -> Vec<Check> {
 				Status::Info,
 			),
 		],
+		CacheInspection::Unrefreshed {
+			path,
+			series,
+			bytes,
+		} => vec![
+			Check::new("Cache path", path.display().to_string(), Status::Info),
+			Check::new(
+				"Last cache update",
+				"Never fully refreshed",
+				Status::Info,
+			)
+			.remedy("Run a title search and wait for the catalogue to refresh"),
+			Check::new(
+				"Cached Series",
+				format!("{series} · {}", HumanBytes(*bytes)),
+				Status::Info,
+			),
+		],
 		CacheInspection::Missing { path, bytes } => vec![
 			Check::new("Cache path", path.display().to_string(), Status::Info),
 			Check::new("Last cache update", "Never", Status::Info)

@@ -40,6 +40,7 @@ pub(crate) enum ReleaseState {
 	Missing,
 }
 
+#[derive(Debug)]
 pub(crate) enum Inspection {
 	Ready {
 		path: PathBuf,
@@ -48,6 +49,11 @@ pub(crate) enum Inspection {
 		bytes: u64,
 		fresh: bool,
 		age: Duration,
+	},
+	Unrefreshed {
+		path: PathBuf,
+		series: usize,
+		bytes: u64,
 	},
 	Missing {
 		path: PathBuf,
@@ -199,20 +205,26 @@ async fn inspect(
 	.fetch_one(&available.pool)
 	.await
 	.map_err(read_error)?;
+	let path = path.to_owned();
+	let bytes = database::size(&path)?;
 	if series == 0 {
-		return Ok(Inspection::Missing {
-			path: path.to_owned(),
-			bytes: database::size(path)?,
-		});
+		return Ok(Inspection::Missing { path, bytes });
 	}
-	let refreshed_at =
-		u64_from(refreshed_at.unwrap_or_default(), "refresh time")?;
+	let series = usize::try_from(series).map_err(read_error)?;
+	let Some(refreshed_at) = refreshed_at else {
+		return Ok(Inspection::Unrefreshed {
+			path,
+			series,
+			bytes,
+		});
+	};
+	let refreshed_at = u64_from(refreshed_at, "refresh time")?;
 	let age = Duration::from_secs(now().saturating_sub(refreshed_at));
 	Ok(Inspection::Ready {
-		path: path.to_owned(),
+		path,
 		refreshed_at,
-		series: usize::try_from(series).map_err(read_error)?,
-		bytes: database::size(path)?,
+		series,
+		bytes,
 		fresh: age < super::MAX_AGE,
 		age,
 	})
