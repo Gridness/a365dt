@@ -134,9 +134,19 @@ async fn writer_commits_one_second_batches_and_finish_drains_the_tail() {
 	);
 	tokio::time::advance(Duration::from_millis(1)).await;
 	tokio::time::resume();
-	tokio::task::yield_now().await;
+	let counters = tokio::time::timeout(Duration::from_secs(5), async {
+		loop {
+			let counters = writer.snapshot().await.unwrap().counters;
+			if !counters.is_empty() {
+				break counters;
+			}
+			tokio::task::yield_now().await;
+		}
+	})
+	.await
+	.unwrap();
 	assert_eq!(
-		writer.snapshot().await.unwrap().counters,
+		counters,
 		BTreeMap::from([("commands.download.success".into(), 1)])
 	);
 
