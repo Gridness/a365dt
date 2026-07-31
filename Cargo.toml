@@ -27,6 +27,7 @@ serde_json = "1"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v7"] }
 
 # test dependencies
 divan = "0.1"

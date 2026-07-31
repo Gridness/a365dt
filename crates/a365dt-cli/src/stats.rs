@@ -4,7 +4,7 @@ use crate::{
 	cache::{Inspection as CacheInspection, Store},
 	doctor::{Check, Status},
 	error::Error,
-	telemetry::{self, Snapshot},
+	telemetry::{self, Snapshot, Writer as TelemetryWriter},
 	ui,
 };
 
@@ -12,10 +12,10 @@ mod metrics;
 
 use metrics::{Aggregate, aggregate};
 
-pub async fn run(store: &Store) {
+pub async fn run(store: &Store, telemetry: &TelemetryWriter) {
 	ui::heading("a365dt stats");
 	let cache = store.inspect().await;
-	let telemetry = telemetry::snapshot();
+	let telemetry = telemetry.snapshot();
 	let rows = statistic_checks(&cache, &telemetry)
 		.iter()
 		.map(Check::row)

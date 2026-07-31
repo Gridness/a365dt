@@ -6,7 +6,7 @@ use crate::{
 	cache::{Inspection as CacheInspection, MAX_AGE, Store},
 	error::Error,
 	startup::{self, Update},
-	telemetry::{self, PerformanceMetric, Snapshot},
+	telemetry::{self, PerformanceMetric, Snapshot, Writer as TelemetryWriter},
 };
 
 mod report;
@@ -16,10 +16,14 @@ pub(crate) use report::{Check, Status};
 use report::{Report, Section};
 use server::Probe as ServerProbe;
 
-pub async fn run(store: &Store, debug: bool) -> ExitCode {
+pub async fn run(
+	store: &Store,
+	telemetry_writer: &TelemetryWriter,
+	debug: bool,
+) -> ExitCode {
 	let (server, update, cache) =
 		tokio::join!(server::probe(), startup::check(store), store.inspect());
-	let telemetry = telemetry::snapshot();
+	let telemetry = telemetry_writer.snapshot();
 	let mut sections = vec![
 		Section {
 			title: "Health",
@@ -36,7 +40,13 @@ pub async fn run(store: &Store, debug: bool) -> ExitCode {
 		sections.push(Section {
 			title: "Debug diagnostics",
 			debug: true,
-			checks: debug_checks(&server, &cache, &telemetry, &update),
+			checks: debug_checks(
+				&server,
+				&cache,
+				&telemetry,
+				&update,
+				telemetry_writer,
+			),
 		});
 	}
 	let report = Report { sections };
@@ -133,6 +143,7 @@ fn debug_checks(
 	cache: &CacheInspection,
 	snapshot: &Result<Snapshot, Error>,
 	update: &Result<Option<Update>, Error>,
+	telemetry: &TelemetryWriter,
 ) -> Vec<Check> {
 	let mut checks = vec![
 		Check::new("Server endpoint", server::URL, Status::Info),
@@ -291,7 +302,7 @@ fn debug_checks(
 			Status::Error,
 		)),
 	}
-	let overhead = telemetry::benchmark_overhead();
+	let overhead = telemetry.benchmark_overhead();
 	checks.push(Check::new(
 		"Telemetry overhead",
 		format!(
