@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0](https://github.com/Gridness/a365dt/compare/v0.12.0...v0.13.0) (2026-07-31)
+
+
+### Features
+
+* **cli:** guard full and partial telemetry clears ([#81](https://github.com/Gridness/a365dt/issues/81)) ([04504c2](https://github.com/Gridness/a365dt/commit/04504c2979cd021d01f60af5642e6af49b837ae5))
+* **cli:** store telemetry as SQLite events ([#79](https://github.com/Gridness/a365dt/issues/79)) ([fb55ef6](https://github.com/Gridness/a365dt/commit/fb55ef6be9fd461a9972320cf20874a4cfe7e699))
+
 ## [0.12.0](https://github.com/Gridness/a365dt/compare/v0.11.0...v0.12.0) (2026-07-30)
 
 
