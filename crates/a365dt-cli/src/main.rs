@@ -152,7 +152,27 @@ enum CacheCommand {
 enum TelemetryCommand {
 	/// Clear collected telemetry without changing collection state.
 	Clear {
-		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
+		/// Clear all telemetry without asking for confirmation.
+		#[arg(short, long, conflicts_with = "since")]
+		yes: bool,
+
+		/// Clear telemetry since 30m, 30 minutes, today, this week, this month,
+		/// or this year.
+		#[arg(
+			long,
+			value_name = "EXPRESSION",
+			num_args = 1..=2,
+			action = clap::ArgAction::Set,
+			conflicts_with = "query"
+		)]
+		since: Option<Vec<String>>,
+
+		#[arg(
+			value_name = "QUERY",
+			num_args = 0..,
+			hide = true,
+			conflicts_with = "yes"
+		)]
 		query: Vec<String>,
 	},
 
@@ -377,7 +397,23 @@ async fn run_telemetry(
 	invocation_id: telemetry::InvocationId,
 ) -> Result<(), Error> {
 	match command {
-		TelemetryCommand::Clear { .. } => telemetry::clear().await,
+		TelemetryCommand::Clear { yes, since, .. } => {
+			let request = match (*yes, since) {
+				(true, None) => telemetry::ClearRequest::All(
+					telemetry::FullClearPermission::Preauthorized,
+				),
+				(false, None) => telemetry::ClearRequest::All(
+					telemetry::FullClearPermission::Ask,
+				),
+				(false, Some(since)) => {
+					telemetry::ClearRequest::Since(since.clone())
+				}
+				(true, Some(_)) => {
+					unreachable!("clap rejects --yes with --since")
+				}
+			};
+			telemetry::clear(request).await
+		}
 		TelemetryCommand::Disable { .. } => {
 			telemetry::disable(invocation_id).await
 		}

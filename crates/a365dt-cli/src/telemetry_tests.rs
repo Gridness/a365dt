@@ -233,7 +233,10 @@ async fn clear_watermark_discards_buffered_history_atomically() {
 	let store = Store::open(paths.clone()).await.unwrap();
 	let mut baseline =
 		store.collection_state().await.unwrap().last_cleared_at_ms;
-	store.clear().await.unwrap();
+	store
+		.clear(super::storage::ClearRange::All, super::recording::now_ms())
+		.await
+		.unwrap();
 	let watermark = store
 		.collection_state()
 		.await

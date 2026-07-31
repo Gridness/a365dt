@@ -1,18 +1,26 @@
 use std::path::PathBuf;
 
+use chrono::Local;
+
 use crate::{app_files, error::Error, ui};
 
+mod clearing;
 mod display;
 mod recording;
 mod snapshot;
 mod storage;
 mod writer;
 
+pub(crate) use clearing::{ClearRequest, FullClearPermission};
+use clearing::{
+	PreparedClear, TerminalAccess, authorize_full_clear, prepare_all,
+	prepare_since,
+};
 pub(crate) use display::format_timestamp;
 pub(crate) use recording::{
 	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Recorder,
 };
-use recording::{Observation, ObservationKind, now_ms};
+use recording::{Observation, ObservationKind};
 pub(crate) use snapshot::{PerformanceMetric, Snapshot};
 use storage::Store;
 pub(crate) use writer::Writer;
@@ -65,13 +73,42 @@ pub async fn show(invocation_id: InvocationId) -> Result<(), Error> {
 	result
 }
 
-pub async fn clear() -> Result<(), Error> {
+pub async fn clear(request: ClearRequest) -> Result<(), Error> {
+	let prepared = match request {
+		ClearRequest::All(permission) => {
+			if !authorize_full_clear(
+				permission,
+				TerminalAccess::detect(),
+				|| ui::confirm("Clear all local telemetry history?", false),
+			)? {
+				ui::note("Telemetry clear cancelled.");
+				return Ok(());
+			}
+			prepare_all(Local::now())?
+		}
+		ClearRequest::Since(values) => prepare_since(&values, Local::now())?,
+	};
+	let (range, cleared_at_ms) = match &prepared {
+		PreparedClear::All { cleared_at_ms } => {
+			(storage::ClearRange::All, *cleared_at_ms)
+		}
+		PreparedClear::Since {
+			cleared_at_ms,
+			cutoff_ms,
+			..
+		} => (storage::ClearRange::Since(*cutoff_ms), *cleared_at_ms),
+	};
 	let store = Store::open(Paths::discover()?).await?;
 	warn_cleanup(&store);
-	let result = store.clear().await;
+	let result = store.clear(range, cleared_at_ms).await;
 	store.close().await;
 	result?;
-	ui::success("Local telemetry cleared");
+	match prepared {
+		PreparedClear::All { .. } => ui::success("Local telemetry cleared"),
+		PreparedClear::Since { expression, .. } => {
+			ui::success(format!("Local telemetry since {expression} cleared"));
+		}
+	}
 	Ok(())
 }
 
@@ -104,6 +141,10 @@ fn warn_cleanup(store: &Store) {
 #[cfg(test)]
 #[path = "telemetry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "telemetry/clearing_tests.rs"]
+mod clearing_tests;
 
 #[cfg(test)]
 #[path = "telemetry_process_tests.rs"]

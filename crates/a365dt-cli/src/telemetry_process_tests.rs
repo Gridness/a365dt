@@ -8,9 +8,9 @@ use pretty_assertions::assert_eq;
 use super::{
 	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Paths,
 	Writer,
-	recording::{Observation, ObservationKind},
+	recording::{Observation, ObservationKind, now_ms},
 	snapshot,
-	storage::Store,
+	storage::{ClearRange, Store},
 };
 use crate::{
 	api::Series,
@@ -269,7 +269,7 @@ async fn worker_state_control() {
 				barrier("ENABLED");
 			}
 			"CLEAR" => {
-				store.clear().await.unwrap();
+				store.clear(ClearRange::All, now_ms()).await.unwrap();
 				barrier("CLEARED");
 			}
 			"FINISH" => break,
