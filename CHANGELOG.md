@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/Gridness/a365dt/compare/v1.0.0...v1.0.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **cli:** handle incomplete catalogue refreshes ([#84](https://github.com/Gridness/a365dt/issues/84)) ([f3b5de3](https://github.com/Gridness/a365dt/commit/f3b5de38ce94e8c84e912d8a894f2cf5324fab92))
+
 ## [1.0.0](https://github.com/Gridness/a365dt/compare/v0.13.0...v1.0.0) (2026-07-31)
 
 
