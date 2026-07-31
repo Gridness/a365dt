@@ -1,14 +1,66 @@
-use std::{fs, process, time::SystemTime};
+use std::{
+	fs, process,
+	time::{Duration, SystemTime},
+};
 
 use pretty_assertions::assert_eq;
+use tokio::sync::{mpsc, oneshot};
 
-use super::remember_failure;
+use super::{receive_batch, remember_failure};
 use crate::telemetry::{
 	Command, CommandOutcome, InvocationId, Paths,
 	recording::{Observation, ObservationKind},
 	snapshot,
 	storage::Store,
 };
+
+#[tokio::test(start_paused = true)]
+async fn batches_for_one_second_and_finishing_drains_the_tail() {
+	let invocation_id = InvocationId::new();
+	let (observations, mut receiver) = mpsc::unbounded_channel();
+	let (finish, mut finishing) = oneshot::channel();
+	observations
+		.send(command_observation(invocation_id, 1, Command::Download))
+		.unwrap();
+	let started = tokio::time::Instant::now();
+	let first_batch = {
+		let batch = receive_batch(&mut receiver, &mut finishing);
+		tokio::pin!(batch);
+		assert!(
+			tokio::time::timeout(Duration::from_millis(999), batch.as_mut())
+				.await
+				.is_err()
+		);
+		batch.await
+	};
+	assert_eq!(
+		(first_batch, started.elapsed()),
+		(
+			Some((
+				vec![command_observation(invocation_id, 1, Command::Download)],
+				false,
+			)),
+			Duration::from_secs(1),
+		)
+	);
+	observations
+		.send(command_observation(invocation_id, 2, Command::Update))
+		.unwrap();
+	observations
+		.send(command_observation(invocation_id, 3, Command::Download))
+		.unwrap();
+	finish.send(()).unwrap();
+	assert_eq!(
+		receive_batch(&mut receiver, &mut finishing).await,
+		Some((
+			vec![
+				command_observation(invocation_id, 2, Command::Update),
+				command_observation(invocation_id, 3, Command::Download),
+			],
+			true,
+		))
+	);
+}
 
 #[tokio::test]
 async fn remembers_the_first_failure_and_keeps_committing() {
@@ -67,6 +119,21 @@ async fn remembers_the_first_failure_and_keeps_committing() {
 	);
 	store.close().await;
 	fs::remove_dir_all(paths.data.parent().unwrap().parent().unwrap()).unwrap();
+}
+
+fn command_observation(
+	invocation_id: InvocationId,
+	observed_at_ms: u64,
+	command: Command,
+) -> Observation {
+	Observation {
+		invocation_id,
+		observed_at_ms,
+		kind: ObservationKind::Command {
+			command,
+			outcome: CommandOutcome::Success,
+		},
+	}
 }
 
 fn paths() -> Paths {
