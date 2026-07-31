@@ -5,45 +5,53 @@ use std::{
 };
 
 use pretty_assertions::assert_eq;
+use tokio::sync::mpsc;
+use uuid::{Uuid, Version};
 
 use super::{
-	CatalogueUse, Command, CommandOutcome, Operation, Paths, Recorder, Usage,
-	clear_at, disable_at,
+	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Paths,
+	Recorder, Stats, Usage, Writer, clear_at, commit_observations, disable_at,
 	display::format_timestamp,
 	enable_at,
 	performance::{Performance, Work},
 	push_sample, read_stats_locked,
+	recording::{DownloadOutcome, Observation, ObservationKind},
 };
 use crate::{
+	api::{Episode, Series},
 	download::{Outcome, Status, Summary},
 	error::Error,
 };
 
-#[test]
-fn records_aggregate_usage_without_download_identity() {
+#[tokio::test]
+async fn records_aggregate_usage_without_download_identity() {
 	let paths = paths("aggregate");
-	let recorder = Recorder::from_paths(paths.clone()).unwrap();
+	let (recorder, writer) =
+		Writer::at(paths.clone(), InvocationId::new()).unwrap();
 	recorder.record_command(Command::Download, CommandOutcome::Success);
 	recorder.record_command(Command::Update, CommandOutcome::Failure);
-	recorder.record_catalogue(CatalogueUse::Hit);
-	recorder.record_download(&Summary {
-		outcomes: vec![
-			Outcome {
-				episode: "secret episode".into(),
-				status: Status::Downloaded,
-				bytes: 42,
-				detail: Error::new("secret path"),
-			},
-			Outcome {
-				episode: "existing episode".into(),
-				status: Status::Skipped,
-				bytes: 100,
-				detail: Error::new("secret existing path"),
-			},
-		],
-		elapsed: Duration::from_millis(12),
-	});
-	recorder.flush().unwrap();
+	recorder.record_series(&series(), CatalogueUse::Hit);
+	recorder.record_download(
+		&series(),
+		&Summary {
+			outcomes: vec![
+				Outcome {
+					episode: "secret episode".into(),
+					status: Status::Downloaded,
+					bytes: 42,
+					detail: Error::new("secret path"),
+				},
+				Outcome {
+					episode: "existing episode".into(),
+					status: Status::Skipped,
+					bytes: 100,
+					detail: Error::new("secret existing path"),
+				},
+			],
+			elapsed: Duration::from_millis(12),
+		},
+	);
+	writer.finish().await.unwrap();
 
 	let stats = read_stats_locked(&paths, true).unwrap();
 	let json = serde_json::to_string(&stats).unwrap();
@@ -67,14 +75,15 @@ fn records_aggregate_usage_without_download_identity() {
 	cleanup(&paths);
 }
 
-#[test]
-fn opt_out_and_clear_have_independent_lifecycles() {
+#[tokio::test]
+async fn opt_out_and_clear_have_independent_lifecycles() {
 	let paths = paths("lifecycle");
-	let recorder = Recorder::from_paths(paths.clone()).unwrap();
+	let (recorder, writer) =
+		Writer::at(paths.clone(), InvocationId::new()).unwrap();
 	recorder.record_command(Command::Download, CommandOutcome::Failure);
-	recorder.flush().unwrap();
+	writer.finish().await.unwrap();
 
-	disable_at(&paths).unwrap();
+	disable_at(&paths, InvocationId::new()).unwrap();
 	clear_at(&paths).unwrap();
 	let disabled = read_stats_locked(&paths, false).unwrap();
 	assert_eq!(disabled.usage, Usage::default());
@@ -82,7 +91,7 @@ fn opt_out_and_clear_have_independent_lifecycles() {
 	assert!(disabled.last_disabled_at.is_some());
 	assert!(disabled.last_cleared_at.is_some());
 
-	enable_at(&paths).unwrap();
+	enable_at(&paths, InvocationId::new()).unwrap();
 	let enabled = read_stats_locked(&paths, true).unwrap();
 	assert_eq!(enabled.schema_version, super::SCHEMA_VERSION);
 	assert!(!paths.disabled.exists());
@@ -118,36 +127,112 @@ fn keeps_only_the_latest_latency_samples() {
 	);
 }
 
-#[test]
-fn shares_and_flushes_performance_observations_from_clones() {
-	let paths = paths("performance");
-	let recorder = Recorder::from_paths(paths.clone()).unwrap();
-	recorder.record_performance(
-		Operation::ApiSearch,
-		Duration::from_micros(1_200),
-		Work::None,
-	);
-	recorder.clone().record_performance(
-		Operation::SearchRank,
-		Duration::from_micros(300),
-		Work::Items(30_000),
-	);
-	recorder.flush().unwrap();
+#[tokio::test]
+async fn clones_share_the_same_writer() {
+	let paths = paths("clones");
+	let (recorder, writer) =
+		Writer::at(paths.clone(), InvocationId::new()).unwrap();
+	recorder.record_command(Command::Download, CommandOutcome::Success);
+	recorder
+		.clone()
+		.record_command(Command::Update, CommandOutcome::Failure);
+	writer.finish().await.unwrap();
 
-	let stats = read_stats_locked(&paths, true).unwrap();
-	let mut expected = Performance::default();
-	expected.record(
-		"request.api.search",
-		Duration::from_micros(1_200),
-		Work::None,
+	assert_eq!(
+		read_stats_locked(&paths, true).unwrap().usage.counters,
+		BTreeMap::from([
+			("commands.download.success".into(), 1),
+			("commands.update.failure".into(), 1),
+		])
 	);
-	expected.record(
-		"search.rank",
-		Duration::from_micros(300),
-		Work::Items(30_000),
-	);
-	assert_eq!(stats.usage.performance, expected);
 	cleanup(&paths);
+}
+
+#[test]
+fn recorder_sends_complete_typed_privacy_safe_observations_from_clones() {
+	let invocation_id = InvocationId::new();
+	let (observations, mut receiver) = mpsc::unbounded_channel();
+	let recorder = Recorder::connected(invocation_id, observations);
+	recorder.record_command(Command::Download, CommandOutcome::Success);
+	recorder
+		.clone()
+		.record_series(&series(), CatalogueUse::Miss);
+	recorder.record_download(
+		&series(),
+		&Summary {
+			outcomes: vec![
+				Outcome {
+					episode: "secret episode".into(),
+					status: Status::Downloaded,
+					bytes: 42,
+					detail: Error::new("secret path"),
+				},
+				Outcome {
+					episode: "secret existing episode".into(),
+					status: Status::Skipped,
+					bytes: 100,
+					detail: Error::new("secret existing path"),
+				},
+			],
+			elapsed: Duration::from_micros(12_345),
+		},
+	);
+	drop(recorder.measure_items(Operation::SearchRank, 30_000));
+	drop(recorder);
+	let mut observations =
+		std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+
+	assert!(
+		observations
+			.iter()
+			.all(|observation| observation.invocation_id == invocation_id)
+	);
+	let performance = observations.pop().unwrap().kind;
+	assert_eq!(
+		observations
+			.into_iter()
+			.map(|observation| observation.kind)
+			.collect::<Vec<_>>(),
+		vec![
+			ObservationKind::Command {
+				command: Command::Download,
+				outcome: CommandOutcome::Success,
+			},
+			ObservationKind::SeriesSelection {
+				series_id: 365,
+				series_title: "Private Series title".into(),
+				catalogue: Some(CatalogueUse::Miss),
+			},
+			ObservationKind::DownloadBatch {
+				series_id: 365,
+				series_title: "Private Series title".into(),
+				duration_us: 12_345,
+				outcomes: vec![
+					DownloadOutcome {
+						status: Status::Downloaded,
+						bytes: Some(42),
+					},
+					DownloadOutcome {
+						status: Status::Skipped,
+						bytes: None,
+					},
+				],
+			},
+		]
+	);
+	assert!(matches!(
+		performance,
+		ObservationKind::Performance {
+			operation: Operation::SearchRank,
+			duration_us: _,
+			work_units: Some(30_000),
+		}
+	));
+	let parsed = Uuid::parse_str(&invocation_id.to_string()).unwrap();
+	assert_eq!(
+		(parsed.get_version(), invocation_id.to_string().len()),
+		(Some(Version::SortRand), 36)
+	);
 }
 
 #[test]
@@ -174,6 +259,127 @@ fn keeps_bounded_recent_performance_samples() {
 	);
 }
 
+#[tokio::test(start_paused = true)]
+async fn writer_commits_one_second_batches_and_finish_drains_the_tail() {
+	let paths = paths("batching");
+	let (recorder, writer) =
+		Writer::at(paths.clone(), InvocationId::new()).unwrap();
+	recorder.record_command(Command::Download, CommandOutcome::Success);
+	tokio::task::yield_now().await;
+
+	tokio::time::advance(Duration::from_millis(999)).await;
+	assert_eq!(
+		read_stats_locked(&paths, true).unwrap().usage,
+		Usage::default()
+	);
+	tokio::time::advance(Duration::from_millis(1)).await;
+	tokio::task::yield_now().await;
+	assert_eq!(
+		writer.snapshot().unwrap().counters,
+		BTreeMap::from([("commands.download.success".into(), 1)])
+	);
+
+	recorder.record_command(Command::Update, CommandOutcome::Failure);
+	writer.finish().await.unwrap();
+	assert_eq!(
+		read_stats_locked(&paths, true).unwrap().usage.counters,
+		BTreeMap::from([
+			("commands.download.success".into(), 1),
+			("commands.update.failure".into(), 1),
+		])
+	);
+	cleanup(&paths);
+}
+
+#[tokio::test(start_paused = true)]
+async fn writer_rechecks_collection_state_for_each_batch() {
+	let paths = paths("collection-state");
+	let invocation_id = InvocationId::new();
+	let (recorder, writer) = Writer::at(paths.clone(), invocation_id).unwrap();
+	recorder.record_command(Command::Download, CommandOutcome::Success);
+	tokio::task::yield_now().await;
+
+	disable_at(&paths, invocation_id).unwrap();
+	tokio::time::advance(Duration::from_secs(1)).await;
+	tokio::task::yield_now().await;
+	enable_at(&paths, invocation_id).unwrap();
+	recorder.record_command(Command::Update, CommandOutcome::Failure);
+	tokio::task::yield_now().await;
+	tokio::time::advance(Duration::from_secs(1)).await;
+	tokio::task::yield_now().await;
+
+	assert_eq!(
+		writer.snapshot().unwrap().counters,
+		BTreeMap::from([
+			("commands.telemetry.disable.success".into(), 1),
+			("commands.telemetry.enable.success".into(), 1),
+			("commands.update.failure".into(), 1),
+		])
+	);
+	writer.finish().await.unwrap();
+	cleanup(&paths);
+}
+
+#[tokio::test(start_paused = true)]
+async fn writer_reports_the_first_failure_after_continuing_later_batches() {
+	let paths = paths("background-failure");
+	let (recorder, writer) =
+		Writer::at(paths.clone(), InvocationId::new()).unwrap();
+	recorder.record_command(Command::Download, CommandOutcome::Success);
+	fs::write(&paths.data, b"{").unwrap();
+	tokio::task::yield_now().await;
+	tokio::time::advance(Duration::from_secs(1)).await;
+	tokio::task::yield_now().await;
+
+	fs::write(&paths.data, serde_json::to_vec(&Stats::default()).unwrap())
+		.unwrap();
+	recorder.record_command(Command::Update, CommandOutcome::Failure);
+	tokio::task::yield_now().await;
+	tokio::time::advance(Duration::from_secs(1)).await;
+	tokio::task::yield_now().await;
+	assert_eq!(
+		writer.snapshot().unwrap().counters,
+		BTreeMap::from([("commands.update.failure".into(), 1)])
+	);
+
+	let error = writer.finish().await.unwrap_err();
+	assert_eq!(
+		error.message(),
+		"Could not read the local telemetry because it is invalid. Run `a365dt telemetry clear` to reset it."
+	);
+	cleanup(&paths);
+}
+
+#[test]
+fn clear_watermark_prevents_pending_observations_from_reappearing() {
+	let paths = paths("clear-watermark");
+	clear_at(&paths).unwrap();
+	let watermark = read_stats_locked(&paths, true)
+		.unwrap()
+		.last_cleared_at_ms
+		.unwrap();
+	let mut before = Observation::command(
+		InvocationId::new(),
+		Command::Download,
+		CommandOutcome::Success,
+	);
+	before.observed_at_ms = watermark;
+	let mut after = Observation::command(
+		InvocationId::new(),
+		Command::Update,
+		CommandOutcome::Failure,
+	);
+	after.observed_at_ms = watermark + 1;
+
+	commit_observations(&paths, vec![before, after]).unwrap();
+
+	assert_eq!(
+		read_stats_locked(&paths, true).unwrap().usage.counters,
+		BTreeMap::from([("commands.update.failure".into(), 1)])
+	);
+	cleanup(&paths);
+}
+
 fn paths(name: &str) -> Paths {
 	let root = std::env::temp_dir().join(format!(
 		"a365dt-telemetry-{name}-{}-{}",
@@ -187,6 +393,22 @@ fn paths(name: &str) -> Paths {
 		data: root.join("data/telemetry.json"),
 		lock: root.join("data/telemetry.lock"),
 		disabled: root.join("config/telemetry-disabled"),
+	}
+}
+
+fn series() -> Series {
+	Series {
+		id: 365,
+		title: "Private Series title".into(),
+		year: None,
+		type_title: None,
+		number_of_episodes: None,
+		poster_url_small: Some("secret poster URL".into()),
+		episodes: vec![Episode {
+			id: 999,
+			episode_int: "secret number".into(),
+			episode_full: "secret episode identity".into(),
+		}],
 	}
 }
 

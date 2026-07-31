@@ -39,6 +39,7 @@ use tokio::{fs, process::Command, signal, sync::watch, task::JoinSet};
 
 use crate::{
 	api::{Anime365, Episode, Translation},
+	command_line::OwnerRoute,
 	download::{Job, Status},
 	error::Error,
 	select::Release,
@@ -179,6 +180,7 @@ enum TelemetryCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
 	let mut args = Args::parse();
+	let invocation_id = telemetry::InvocationId::new();
 	ui::init();
 	let debug = args.debug;
 	if !args.forced_query.is_empty() && args.command.is_some() {
@@ -193,7 +195,11 @@ async fn main() -> ExitCode {
 		return ExitCode::FAILURE;
 	}
 	command_line::route_title_query(&mut args);
-	if let Some(Commands::Purge { yes }) = args.command.as_ref() {
+	let owner_route = command_line::owner_route(&args);
+	if owner_route == OwnerRoute::Purge {
+		let Some(Commands::Purge { yes }) = args.command.as_ref() else {
+			unreachable!("the purge route contains a purge command")
+		};
 		let confirmed = if *yes {
 			true
 		} else {
@@ -232,8 +238,12 @@ async fn main() -> ExitCode {
 			}
 		};
 	}
-	if let Some(Commands::Telemetry { command }) = args.command.as_ref() {
-		return match run_telemetry(command) {
+	if owner_route == OwnerRoute::TelemetryControl {
+		let Some(Commands::Telemetry { command }) = args.command.as_ref()
+		else {
+			unreachable!("the Telemetry control route contains its command")
+		};
+		return match run_telemetry(command, invocation_id) {
 			Ok(()) => ExitCode::SUCCESS,
 			Err(error) => {
 				ui::failure(error.render(debug));
@@ -242,13 +252,10 @@ async fn main() -> ExitCode {
 		};
 	}
 	let command = telemetry_command(&args);
-	let telemetry = match telemetry::Recorder::new() {
-		Ok(telemetry) => telemetry,
-		Err(error) => {
-			ui::warning(error.render(debug));
-			telemetry::Recorder::default()
-		}
-	};
+	let (telemetry, telemetry_writer) = telemetry::Writer::open(invocation_id);
+	if let Some(error) = telemetry_writer.initialization_warning() {
+		ui::warning(error.render(debug));
+	}
 	let active_download = Arc::new(Mutex::new(None));
 	let interrupt_download = Arc::clone(&active_download);
 	drop(tokio::spawn(async move {
@@ -269,53 +276,67 @@ async fn main() -> ExitCode {
 			}
 		}
 	}));
-	let result = if let Some(Commands::Completions { arguments }) =
-		args.command.as_ref()
-	{
-		generate(
-			completion_shell(arguments)
-				.expect("invalid completion shells return to title search"),
-			&mut Args::command(),
-			"a365dt",
-			&mut std::io::stdout(),
-		);
-		Ok(ExitCode::SUCCESS)
-	} else if let Some(Commands::Cache {
-		command: CacheCommand::Prune { yes, .. },
-	}) = args.command.as_ref()
-	{
-		prune_cache(if *yes {
-			cache::RebuildPermission::Preauthorized
-		} else {
-			cache::RebuildPermission::Ask
-		})
-		.await
-	} else {
-		let store = cache::Store::open().await;
-		if let Some(error) = store.initialization_warning() {
-			ui::warning(error);
-		}
-		let result = if let Some(Commands::Doctor { .. }) =
-			args.command.as_ref()
-		{
-			Ok(doctor::run(&store, debug).await)
-		} else if let Some(Commands::Stats { .. }) = args.command.as_ref() {
-			stats::run(&store).await;
+	let result = match owner_route {
+		OwnerRoute::TelemetryOnly => {
+			let Some(Commands::Completions { arguments }) =
+				args.command.as_ref()
+			else {
+				unreachable!("the Telemetry-only route generates completions")
+			};
+			generate(
+				completion_shell(arguments)
+					.expect("invalid completion shells return to title search"),
+				&mut Args::command(),
+				"a365dt",
+				&mut std::io::stdout(),
+			);
 			Ok(ExitCode::SUCCESS)
-		} else if let Some(Commands::Update { .. }) = args.command.as_ref() {
-			startup::check(&store).await.map(|update| {
-				if let Some(update) = update {
-					startup::show_update(&update);
-				} else {
-					ui::success("Already up to date");
-				}
-				ExitCode::SUCCESS
+		}
+		OwnerRoute::CachePruneAndTelemetry => {
+			let Some(Commands::Cache {
+				command: CacheCommand::Prune { yes, .. },
+			}) = args.command.as_ref()
+			else {
+				unreachable!("the cache-prune route contains its command")
+			};
+			prune_cache(if *yes {
+				cache::RebuildPermission::Preauthorized
+			} else {
+				cache::RebuildPermission::Ask
 			})
-		} else {
-			run(args, active_download, &store, &telemetry).await
-		};
-		store.close().await;
-		result
+			.await
+		}
+		OwnerRoute::CacheAndTelemetry => {
+			let store = cache::Store::open().await;
+			if let Some(error) = store.initialization_warning() {
+				ui::warning(error);
+			}
+			let result = if let Some(Commands::Doctor { .. }) =
+				args.command.as_ref()
+			{
+				Ok(doctor::run(&store, &telemetry_writer, debug).await)
+			} else if let Some(Commands::Stats { .. }) = args.command.as_ref() {
+				stats::run(&store, &telemetry_writer).await;
+				Ok(ExitCode::SUCCESS)
+			} else if let Some(Commands::Update { .. }) = args.command.as_ref()
+			{
+				startup::check(&store).await.map(|update| {
+					if let Some(update) = update {
+						startup::show_update(&update);
+					} else {
+						ui::success("Already up to date");
+					}
+					ExitCode::SUCCESS
+				})
+			} else {
+				run(args, active_download, &store, &telemetry).await
+			};
+			store.close().await;
+			result
+		}
+		OwnerRoute::Purge | OwnerRoute::TelemetryControl => {
+			unreachable!("early-return routes do not open ordinary owners")
+		}
 	};
 	let (code, outcome) = match result {
 		Ok(code) if code == ExitCode::SUCCESS => {
@@ -336,7 +357,7 @@ async fn main() -> ExitCode {
 		}
 	};
 	telemetry.record_command(command, outcome);
-	if let Err(error) = telemetry.flush() {
+	if let Err(error) = telemetry_writer.finish().await {
 		ui::warning(error.render(debug));
 	}
 	code
@@ -349,12 +370,15 @@ fn completion_shell(arguments: &[String]) -> Option<Shell> {
 	shell.parse().ok()
 }
 
-fn run_telemetry(command: &TelemetryCommand) -> Result<(), Error> {
+fn run_telemetry(
+	command: &TelemetryCommand,
+	invocation_id: telemetry::InvocationId,
+) -> Result<(), Error> {
 	match command {
 		TelemetryCommand::Clear { .. } => telemetry::clear(),
-		TelemetryCommand::Disable { .. } => telemetry::disable(),
-		TelemetryCommand::Enable { .. } => telemetry::enable(),
-		TelemetryCommand::Show { .. } => telemetry::show(),
+		TelemetryCommand::Disable { .. } => telemetry::disable(invocation_id),
+		TelemetryCommand::Enable { .. } => telemetry::enable(invocation_id),
+		TelemetryCommand::Show { .. } => telemetry::show(invocation_id),
 		TelemetryCommand::Query(_) => {
 			unreachable!("telemetry queries return to title search")
 		}
@@ -424,7 +448,7 @@ async fn run(
 		args.forced_query.join(" ")
 	};
 	let selected = series_search::choose(&api, store, query, telemetry).await?;
-	telemetry.record_catalogue(selected.catalogue);
+	telemetry.record_series(&selected.series, selected.catalogue);
 	let series = selected.series;
 	ui::success(format!("Selected {}", series.title));
 	poster::show(&api, &series).await;
@@ -485,7 +509,7 @@ async fn run(
 		download::run(api, jobs, args.jobs.get(), args.debug, cancellation)
 			.await;
 	*active_download.lock().unwrap() = None;
-	telemetry.record_download(&summary);
+	telemetry.record_download(&series, &summary);
 	print_summary(&summary, &directory, args.debug);
 	ui::alert();
 	let interrupted = summary

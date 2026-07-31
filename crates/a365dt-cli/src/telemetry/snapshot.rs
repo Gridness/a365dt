@@ -1,10 +1,10 @@
-use std::{
-	collections::BTreeMap, fs, io, path::PathBuf, sync::Arc, time::Instant,
-};
+use std::{collections::BTreeMap, fs, io, path::PathBuf, time::Instant};
+
+use tokio::sync::mpsc;
 
 use super::{
-	Error, Operation, Paths, Recorder, is_disabled, read_stats_locked,
-	storage_error,
+	Error, InvocationId, Operation, Paths, Recorder, is_disabled,
+	read_stats_locked, storage_error,
 };
 
 pub struct Snapshot {
@@ -36,10 +36,9 @@ pub struct Overhead {
 	pub added_ns: u64,
 }
 
-pub fn capture() -> Result<Snapshot, Error> {
-	let paths = Paths::discover()?;
-	let enabled = !is_disabled(&paths)?;
-	let stats = read_stats_locked(&paths, enabled)?;
+pub(super) fn capture(paths: &Paths) -> Result<Snapshot, Error> {
+	let enabled = !is_disabled(paths)?;
+	let stats = read_stats_locked(paths, enabled)?;
 	let data_bytes = match fs::metadata(&paths.data) {
 		Ok(metadata) => Some(metadata.len()),
 		Err(error) if error.kind() == io::ErrorKind::NotFound => None,
@@ -68,8 +67,8 @@ pub fn capture() -> Result<Snapshot, Error> {
 		.collect();
 	Ok(Snapshot {
 		enabled,
-		data_path: paths.data,
-		disabled_path: paths.disabled,
+		data_path: paths.data.clone(),
+		disabled_path: paths.disabled.clone(),
 		data_bytes,
 		schema_version: stats.schema_version,
 		first_recorded_at: stats.usage.first_recorded_at,
@@ -82,12 +81,9 @@ pub fn capture() -> Result<Snapshot, Error> {
 	})
 }
 
-pub fn benchmark_overhead() -> Overhead {
-	let enabled = Recorder {
-		enabled: true,
-		paths: None,
-		usage: Arc::default(),
-	};
+pub(super) fn benchmark_overhead(invocation_id: InvocationId) -> Overhead {
+	let (observations, _receiver) = mpsc::unbounded_channel();
+	let enabled = Recorder::connected(invocation_id, observations);
 	let disabled = Recorder::default();
 	let enabled_ns = median_overhead(&enabled);
 	let disabled_ns = median_overhead(&disabled);

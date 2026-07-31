@@ -6,7 +6,7 @@ use tokio::sync::watch;
 
 use super::{
 	Args, CacheCommand, Commands, TelemetryCommand, cancel_download,
-	command_line::route_title_query,
+	command_line::{OwnerRoute, owner_route, route_title_query},
 };
 
 #[test]
@@ -159,4 +159,32 @@ fn accepts_preauthorized_cache_rebuilds() {
 			}
 		}) if query.is_empty()
 	));
+}
+
+#[test]
+fn routes_commands_to_only_their_required_owners() {
+	for (arguments, expected) in [
+		(&["a365dt", "purge", "--yes"][..], OwnerRoute::Purge),
+		(
+			&["a365dt", "telemetry", "show"][..],
+			OwnerRoute::TelemetryControl,
+		),
+		(
+			&["a365dt", "completions", "zsh"][..],
+			OwnerRoute::TelemetryOnly,
+		),
+		(
+			&["a365dt", "cache", "prune", "--yes"][..],
+			OwnerRoute::CachePruneAndTelemetry,
+		),
+		(&["a365dt", "doctor"][..], OwnerRoute::CacheAndTelemetry),
+		(&["a365dt", "stats"][..], OwnerRoute::CacheAndTelemetry),
+		(&["a365dt", "update"][..], OwnerRoute::CacheAndTelemetry),
+		(&["a365dt", "Frieren"][..], OwnerRoute::CacheAndTelemetry),
+	] {
+		let mut args = Args::try_parse_from(arguments.iter().copied()).unwrap();
+		route_title_query(&mut args);
+
+		assert_eq!(owner_route(&args), expected);
+	}
 }

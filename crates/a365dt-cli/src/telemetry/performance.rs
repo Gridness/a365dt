@@ -36,19 +36,6 @@ impl Performance {
 		push_sample(&mut metric.samples_us, duration);
 	}
 
-	pub fn merge(&mut self, newer: &Self) {
-		for (operation, newer) in &newer.metrics {
-			let metric = self.metrics.entry(operation.clone()).or_default();
-			metric.count = metric.count.saturating_add(newer.count);
-			metric.total_us = metric.total_us.saturating_add(newer.total_us);
-			metric.work_units =
-				metric.work_units.saturating_add(newer.work_units);
-			for sample in &newer.samples_us {
-				push_sample(&mut metric.samples_us, *sample);
-			}
-		}
-	}
-
 	pub fn is_empty(&self) -> bool {
 		self.metrics.is_empty()
 	}

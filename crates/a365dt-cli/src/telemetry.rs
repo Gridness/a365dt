@@ -3,92 +3,34 @@ use std::{
 	fs::{self, File, OpenOptions},
 	io,
 	path::PathBuf,
-	sync::{Arc, Mutex},
-	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-	app_files,
-	download::{self, Status},
-	error::Error,
-	ui,
-};
+use crate::{app_files, download::Status, error::Error, ui};
 
 mod display;
 mod performance;
+mod recording;
 mod snapshot;
+mod writer;
 
 pub(crate) use display::format_timestamp;
 use performance::{Performance, Work};
-pub(crate) use snapshot::{
-	PerformanceMetric, Snapshot, benchmark_overhead, capture as snapshot,
+use recording::now_ms;
+pub(crate) use recording::{
+	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Recorder,
 };
+use recording::{Observation, ObservationKind};
+pub(crate) use snapshot::{PerformanceMetric, Snapshot};
+pub(crate) use writer::Writer;
 
 const SCHEMA_VERSION: u16 = 1;
 const SAMPLE_LIMIT: usize = 101;
 
-#[derive(Clone, Copy)]
-pub enum Command {
-	CachePrune,
-	Completions,
-	Doctor,
-	Download,
-	Stats,
-	TelemetryDisable,
-	TelemetryEnable,
-	TelemetryShow,
-	Update,
-}
-
-#[derive(Clone, Copy)]
-pub enum CommandOutcome {
-	Cancelled,
-	Failure,
-	Success,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CatalogueUse {
-	Bypassed,
-	Hit,
-	Miss,
-}
-
-#[derive(Clone, Copy)]
-pub enum Operation {
-	ApiEmbed,
-	ApiSearch,
-	ApiSeries,
-	ApiSeriesPage,
-	ApiTranslations,
-	ApiValidate,
-	AssetGet,
-	AssetHead,
-	AssetResume,
-	CacheRetrieve,
-	CacheStore,
-	SearchIndex,
-	SearchRank,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Recorder {
-	enabled: bool,
-	paths: Option<Paths>,
-	usage: Arc<Mutex<Usage>>,
-}
-
-pub struct Measurement<'a> {
-	recorder: &'a Recorder,
-	operation: Operation,
-	started: Option<Instant>,
-	work: Work,
-}
-
 #[derive(Clone, Debug)]
-struct Paths {
+pub(super) struct Paths {
 	data: PathBuf,
 	disabled: PathBuf,
 	lock: PathBuf,
@@ -96,17 +38,18 @@ struct Paths {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
-struct Stats {
+pub(super) struct Stats {
 	schema_version: u16,
 	last_enabled_at: Option<u64>,
 	last_disabled_at: Option<u64>,
 	last_cleared_at: Option<u64>,
+	last_cleared_at_ms: Option<u64>,
 	usage: Usage,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
-struct Usage {
+pub(super) struct Usage {
 	first_recorded_at: Option<u64>,
 	last_recorded_at: Option<u64>,
 	first_download_at: Option<u64>,
@@ -123,149 +66,8 @@ impl Default for Stats {
 			last_enabled_at: None,
 			last_disabled_at: None,
 			last_cleared_at: None,
+			last_cleared_at_ms: None,
 			usage: Usage::default(),
-		}
-	}
-}
-
-impl Command {
-	fn name(self) -> &'static str {
-		match self {
-			Self::CachePrune => "cache prune",
-			Self::Completions => "completions",
-			Self::Doctor => "doctor",
-			Self::Download => "download",
-			Self::Stats => "stats",
-			Self::TelemetryDisable => "telemetry disable",
-			Self::TelemetryEnable => "telemetry enable",
-			Self::TelemetryShow => "telemetry show",
-			Self::Update => "update",
-		}
-	}
-}
-
-impl CommandOutcome {
-	fn name(self) -> &'static str {
-		match self {
-			Self::Cancelled => "cancelled",
-			Self::Failure => "failure",
-			Self::Success => "success",
-		}
-	}
-}
-
-impl Operation {
-	fn name(self) -> &'static str {
-		match self {
-			Self::ApiEmbed => "request.api.embed",
-			Self::ApiSearch => "request.api.search",
-			Self::ApiSeries => "request.api.series",
-			Self::ApiSeriesPage => "request.api.series_page",
-			Self::ApiTranslations => "request.api.translations",
-			Self::ApiValidate => "request.api.validate",
-			Self::AssetGet => "request.asset.get",
-			Self::AssetHead => "request.asset.head",
-			Self::AssetResume => "request.asset.resume",
-			Self::CacheRetrieve => "cache.retrieve",
-			Self::CacheStore => "cache.store",
-			Self::SearchIndex => "search.index",
-			Self::SearchRank => "search.rank",
-		}
-	}
-}
-
-impl Recorder {
-	pub fn new() -> Result<Self, Error> {
-		Self::from_paths(Paths::discover()?)
-	}
-
-	fn from_paths(paths: Paths) -> Result<Self, Error> {
-		Ok(Self {
-			enabled: !is_disabled(&paths)?,
-			paths: Some(paths),
-			usage: Arc::default(),
-		})
-	}
-
-	pub fn record_command(&self, command: Command, outcome: CommandOutcome) {
-		if self.enabled {
-			self.usage
-				.lock()
-				.unwrap()
-				.record_command(command, outcome, now());
-		}
-	}
-
-	pub fn record_catalogue(&self, usage: CatalogueUse) {
-		if self.enabled {
-			self.usage.lock().unwrap().record_catalogue(usage, now());
-		}
-	}
-
-	pub fn record_download(&self, summary: &download::Summary) {
-		if self.enabled {
-			self.usage.lock().unwrap().record_download(summary, now());
-		}
-	}
-
-	pub fn measure(&self, operation: Operation) -> Measurement<'_> {
-		Measurement {
-			recorder: self,
-			operation,
-			started: self.enabled.then(Instant::now),
-			work: Work::None,
-		}
-	}
-
-	pub fn measure_items(
-		&self,
-		operation: Operation,
-		items: usize,
-	) -> Measurement<'_> {
-		Measurement {
-			recorder: self,
-			operation,
-			started: self.enabled.then(Instant::now),
-			work: Work::Items(u64::try_from(items).unwrap_or(u64::MAX)),
-		}
-	}
-
-	fn record_performance(
-		&self,
-		operation: Operation,
-		duration: Duration,
-		work: Work,
-	) {
-		self.usage.lock().unwrap().performance.record(
-			operation.name(),
-			duration,
-			work,
-		);
-	}
-
-	pub fn flush(&self) -> Result<(), Error> {
-		let Some(paths) = &self.paths else {
-			return Ok(());
-		};
-		let usage = self.usage.lock().unwrap().clone();
-		if !self.enabled || usage == Usage::default() {
-			return Ok(());
-		}
-		if is_disabled(paths)? {
-			return Ok(());
-		}
-		update_stats(paths, true, |stats| stats.usage.merge(&usage))
-	}
-}
-
-impl Drop for Measurement<'_> {
-	fn drop(&mut self) {
-		if let Some(started) = self.started {
-			self.recorder.record_performance(
-				self.operation,
-				started.elapsed(),
-				self.work,
-			);
 		}
 	}
 }
@@ -295,6 +97,39 @@ impl Stats {
 }
 
 impl Usage {
+	fn record_observation(&mut self, observation: Observation) {
+		let at = observation.observed_at_ms / 1_000;
+		match observation.kind {
+			ObservationKind::Command { command, outcome } => {
+				self.record_command(command, outcome, at);
+			}
+			ObservationKind::SeriesSelection { catalogue, .. } => {
+				if let Some(catalogue) = catalogue {
+					self.record_catalogue(catalogue, at);
+				} else {
+					self.touch(at);
+				}
+			}
+			ObservationKind::DownloadBatch {
+				duration_us,
+				outcomes,
+				..
+			} => self.record_download(duration_us, outcomes, at),
+			ObservationKind::Performance {
+				operation,
+				duration_us,
+				work_units,
+			} => {
+				self.performance.record(
+					operation.name(),
+					Duration::from_micros(duration_us),
+					work_units.map_or(Work::None, Work::Items),
+				);
+				self.touch(at);
+			}
+		}
+	}
+
 	fn record_command(
 		&mut self,
 		command: Command,
@@ -322,12 +157,20 @@ impl Usage {
 		self.touch(at);
 	}
 
-	fn record_download(&mut self, summary: &download::Summary, at: u64) {
+	fn record_download(
+		&mut self,
+		duration_us: u64,
+		outcomes: Vec<recording::DownloadOutcome>,
+		at: u64,
+	) {
 		self.increment("downloads.batches", 1);
-		for outcome in &summary.outcomes {
+		for outcome in outcomes {
 			let counter = match outcome.status {
 				Status::Downloaded => {
-					self.increment("downloads.bytes", outcome.bytes);
+					self.increment(
+						"downloads.bytes",
+						outcome.bytes.unwrap_or_default(),
+					);
 					"downloads.episodes.downloaded"
 				}
 				Status::Skipped => "downloads.episodes.skipped",
@@ -341,7 +184,7 @@ impl Usage {
 			self.samples
 				.entry("downloads.batch_duration_ms".into())
 				.or_default(),
-			u64::try_from(summary.elapsed.as_millis()).unwrap_or(u64::MAX),
+			duration_us / 1_000,
 		);
 		self.first_download_at = earliest(self.first_download_at, Some(at));
 		self.last_download_at = latest(self.last_download_at, Some(at));
@@ -357,42 +200,22 @@ impl Usage {
 		self.first_recorded_at = earliest(self.first_recorded_at, Some(at));
 		self.last_recorded_at = latest(self.last_recorded_at, Some(at));
 	}
-
-	fn merge(&mut self, newer: &Self) {
-		self.first_recorded_at =
-			earliest(self.first_recorded_at, newer.first_recorded_at);
-		self.last_recorded_at =
-			latest(self.last_recorded_at, newer.last_recorded_at);
-		self.first_download_at =
-			earliest(self.first_download_at, newer.first_download_at);
-		self.last_download_at =
-			latest(self.last_download_at, newer.last_download_at);
-		for (key, value) in &newer.counters {
-			self.increment(key.clone(), *value);
-		}
-		for (key, samples) in &newer.samples {
-			let current = self.samples.entry(key.clone()).or_default();
-			for sample in samples {
-				push_sample(current, *sample);
-			}
-		}
-		self.performance.merge(&newer.performance);
-	}
 }
 
-pub fn show() -> Result<(), Error> {
+pub fn show(invocation_id: InvocationId) -> Result<(), Error> {
 	let paths = Paths::discover()?;
 	let disabled = is_disabled(&paths)?;
 	let stats = read_stats_locked(&paths, !disabled)?;
 	display::print(&paths, &stats, disabled);
 	if !disabled {
-		let mut usage = Usage::default();
-		usage.record_command(
-			Command::TelemetryShow,
-			CommandOutcome::Success,
-			now(),
-		);
-		update_stats(&paths, true, |stats| stats.usage.merge(&usage))?;
+		commit_observations(
+			&paths,
+			vec![Observation::command(
+				invocation_id,
+				Command::TelemetryShow,
+				CommandOutcome::Success,
+			)],
+		)?;
 	}
 	Ok(())
 }
@@ -411,29 +234,31 @@ fn clear_at(paths: &Paths) -> Result<(), Error> {
 	let mut stats = read_stats(paths, !disabled)
 		.unwrap_or_else(|_| Stats::new(!disabled, disabled_at));
 	stats.usage = Usage::default();
-	stats.last_cleared_at = Some(now());
+	let cleared_at_ms = now_ms();
+	stats.last_cleared_at = Some(cleared_at_ms / 1_000);
+	stats.last_cleared_at_ms = Some(cleared_at_ms);
 	write_stats(paths, &stats)?;
 	Ok(())
 }
 
-pub fn disable() -> Result<(), Error> {
+pub fn disable(invocation_id: InvocationId) -> Result<(), Error> {
 	let paths = Paths::discover()?;
-	disable_at(&paths)?;
+	disable_at(&paths, invocation_id)?;
 	ui::success("Local telemetry disabled");
 	Ok(())
 }
 
-fn disable_at(paths: &Paths) -> Result<(), Error> {
+fn disable_at(paths: &Paths, invocation_id: InvocationId) -> Result<(), Error> {
 	let already_disabled = is_disabled(paths)?;
 	let at = now();
 	write_marker(paths, at)?;
 	update_stats(paths, false, |stats| {
 		if !already_disabled {
-			stats.usage.record_command(
+			stats.usage.record_observation(Observation::command(
+				invocation_id,
 				Command::TelemetryDisable,
 				CommandOutcome::Success,
-				at,
-			);
+			));
 			stats.last_enabled_at.get_or_insert(at);
 		}
 		stats.last_disabled_at = Some(at);
@@ -441,22 +266,22 @@ fn disable_at(paths: &Paths) -> Result<(), Error> {
 	Ok(())
 }
 
-pub fn enable() -> Result<(), Error> {
+pub fn enable(invocation_id: InvocationId) -> Result<(), Error> {
 	let paths = Paths::discover()?;
-	enable_at(&paths)?;
+	enable_at(&paths, invocation_id)?;
 	ui::success("Local telemetry enabled");
 	Ok(())
 }
 
-fn enable_at(paths: &Paths) -> Result<(), Error> {
+fn enable_at(paths: &Paths, invocation_id: InvocationId) -> Result<(), Error> {
 	let at = now();
 	update_stats(paths, false, |stats| {
 		stats.last_enabled_at = Some(at);
-		stats.usage.record_command(
+		stats.usage.record_observation(Observation::command(
+			invocation_id,
 			Command::TelemetryEnable,
 			CommandOutcome::Success,
-			at,
-		);
+		));
 	})?;
 	remove_marker(paths)?;
 	Ok(())
@@ -475,6 +300,28 @@ fn update_stats(
 	let _lock = lock(paths)?;
 	let mut stats = read_stats(paths, enabled)?;
 	update(&mut stats);
+	write_stats(paths, &stats)
+}
+
+fn commit_observations(
+	paths: &Paths,
+	observations: Vec<Observation>,
+) -> Result<(), Error> {
+	let _lock = lock(paths)?;
+	if is_disabled(paths)? {
+		return Ok(());
+	}
+	let mut stats = read_stats(paths, true)?;
+	let watermark = stats.last_cleared_at_ms.or_else(|| {
+		stats
+			.last_cleared_at
+			.map(|timestamp| timestamp.saturating_mul(1_000))
+	});
+	for observation in observations.into_iter().filter(|observation| {
+		watermark.is_none_or(|at| observation.observed_at_ms > at)
+	}) {
+		stats.usage.record_observation(observation);
+	}
 	write_stats(paths, &stats)
 }
 
