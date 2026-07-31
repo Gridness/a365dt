@@ -21,12 +21,22 @@ static MIGRATOR: Migrator = sqlx::migrate!("./migrations/cache");
 #[derive(Clone, Debug)]
 pub(super) struct Database {
 	pub(super) pool: SqlitePool,
-	_lock: Arc<File>,
+	_lock: Arc<FileLock>,
 }
 
 pub(super) struct OpenFailure {
 	pub(super) error: Error,
 	pub(super) rebuildable: bool,
+}
+
+#[derive(Debug)]
+struct FileLock(File);
+
+impl Drop for FileLock {
+	fn drop(&mut self) {
+		// Forked children can keep a duplicated descriptor open after this one closes.
+		let _ = self.0.unlock();
+	}
 }
 
 #[derive(Clone, Copy)]
@@ -116,7 +126,7 @@ pub(super) fn size(path: &Path) -> Result<u64, Error> {
 
 async fn open_database(
 	path: PathBuf,
-	cache_lock: Arc<File>,
+	cache_lock: Arc<FileLock>,
 	mode: OpenMode,
 ) -> Result<Database, OpenFailure> {
 	let pool = match sqlite::connect(&path, mode, Durability::Cache).await {
@@ -178,23 +188,23 @@ async fn validate_schema(
 	Ok(())
 }
 
-fn shared_lock(directory: &Path) -> Result<File, Error> {
+fn shared_lock(directory: &Path) -> Result<FileLock, Error> {
 	let file = lock_file(directory, LOCK_FILE)?;
 	file.lock_shared().map_err(|error| {
 		Error::with_debug("Could not open the local cache.", error)
 	})?;
-	Ok(file)
+	Ok(FileLock(file))
 }
 
-fn initialization_lock(directory: &Path) -> Result<File, Error> {
+fn initialization_lock(directory: &Path) -> Result<FileLock, Error> {
 	let file = lock_file(directory, INITIALIZATION_LOCK_FILE)?;
 	file.lock().map_err(|error| {
 		Error::with_debug("Could not initialize the local cache.", error)
 	})?;
-	Ok(file)
+	Ok(FileLock(file))
 }
 
-fn exclusive_lock(directory: &Path) -> Result<File, Error> {
+fn exclusive_lock(directory: &Path) -> Result<FileLock, Error> {
 	let file = lock_file(directory, LOCK_FILE)?;
 	file.try_lock().map_err(|error| {
 		Error::with_debug(
@@ -202,7 +212,7 @@ fn exclusive_lock(directory: &Path) -> Result<File, Error> {
 			error,
 		)
 	})?;
-	Ok(file)
+	Ok(FileLock(file))
 }
 
 fn lock_file(directory: &Path, name: &str) -> Result<File, Error> {
