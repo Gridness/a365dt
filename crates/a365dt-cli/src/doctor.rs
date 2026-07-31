@@ -96,7 +96,7 @@ fn health_checks(
 			.remedy("Run `a365dt telemetry enable` to resume observations"),
 		Err(error) => {
 			Check::new("Local telemetry", error.render(debug), Status::Error)
-				.remedy("Run `a365dt telemetry clear` to reset it")
+				.remedy("Run `a365dt doctor --debug` to inspect its database")
 		}
 	};
 	vec![server, cache, telemetry]

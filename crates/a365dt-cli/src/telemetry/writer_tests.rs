@@ -57,7 +57,7 @@ async fn remembers_the_first_failure_and_keeps_committing() {
 			snapshot::capture(&store).await.unwrap().counters,
 		),
 		(
-			"Could not update the local telemetry; run `a365dt telemetry clear` to reset it."
+			"Could not update the local telemetry. Close other a365dt processes and retry."
 				.into(),
 			std::collections::BTreeMap::from([(
 				"commands.update.success".into(),

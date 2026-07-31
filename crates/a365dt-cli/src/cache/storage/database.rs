@@ -9,7 +9,7 @@ use sqlx::{SqlitePool, migrate::Migrator};
 
 use crate::{
 	error::Error,
-	sqlite::{self, Durability, MigrationError},
+	sqlite::{self, Durability, MigrationError, OpenMode},
 };
 
 pub(super) const FILE: &str = "cache.sqlite";
@@ -27,12 +27,6 @@ pub(super) struct Database {
 pub(super) struct OpenFailure {
 	pub(super) error: Error,
 	pub(super) rebuildable: bool,
-}
-
-#[derive(Clone, Copy)]
-enum OpenMode {
-	Existing,
-	Initialize,
 }
 
 #[derive(Clone, Copy)]
@@ -67,7 +61,7 @@ pub(super) async fn open(directory: &Path) -> Result<Database, OpenFailure> {
 		{
 			Ok(database) => database.pool.close().await,
 			Err(failure) => {
-				remove_new_database(&path);
+				sqlite::remove_new_database(&path);
 				return Err(failure);
 			}
 		}
@@ -125,19 +119,21 @@ async fn open_database(
 	cache_lock: Arc<File>,
 	mode: OpenMode,
 ) -> Result<Database, OpenFailure> {
-	let pool = sqlite::connect(
-		&path,
-		matches!(mode, OpenMode::Initialize),
-		Durability::Cache,
-	)
-	.await
-	.map_err(|error| open_failure(&path, error, FailureContext::Opening))?;
+	let pool = match sqlite::connect(&path, mode, Durability::Cache).await {
+		Ok(pool) => pool,
+		Err(error) => {
+			drop(cache_lock);
+			return Err(open_failure(&path, error, FailureContext::Opening));
+		}
+	};
 	if let Err(failure) = migrate(&pool, &path).await {
 		pool.close().await;
+		drop(cache_lock);
 		return Err(failure);
 	}
 	if let Err(failure) = validate_schema(&pool, &path).await {
 		pool.close().await;
+		drop(cache_lock);
 		return Err(failure);
 	}
 	Ok(Database {
@@ -222,16 +218,6 @@ fn lock_file(directory: &Path, name: &str) -> Result<File, Error> {
 		.map_err(|error| {
 			Error::with_debug("Could not open the local cache.", error)
 		})
-}
-
-fn remove_new_database(path: &Path) {
-	for path in sqlite::files(path) {
-		if let Err(error) = fs::remove_file(path)
-			&& error.kind() != io::ErrorKind::NotFound
-		{
-			break;
-		}
-	}
 }
 
 fn open_failure(

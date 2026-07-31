@@ -314,6 +314,38 @@ async fn failed_initialization_keeps_every_legacy_file() {
 	cleanup(&paths);
 }
 
+#[tokio::test]
+async fn invalid_legacy_opt_out_keeps_every_legacy_file() {
+	let paths = paths("invalid-opt-out");
+	fs::create_dir_all(paths.data.parent().unwrap()).unwrap();
+	fs::create_dir_all(paths.disabled.parent().unwrap()).unwrap();
+	let legacy = paths.data.with_file_name("telemetry.json");
+	fs::write(&legacy, b"legacy").unwrap();
+	fs::write(&paths.lock, b"legacy").unwrap();
+	fs::write(&paths.disabled, b"invalid").unwrap();
+
+	let error = match Store::open(paths.clone()).await {
+		Ok(_) => panic!("invalid opt-out timestamp should fail"),
+		Err(error) => error,
+	};
+
+	assert!(
+		error
+			.to_string()
+			.contains("Could not open the local telemetry")
+	);
+	assert!(!paths.data.exists());
+	assert_eq!(
+		(
+			fs::read(legacy).unwrap(),
+			fs::read(&paths.lock).unwrap(),
+			fs::read(&paths.disabled).unwrap(),
+		),
+		(b"legacy".to_vec(), b"legacy".to_vec(), b"invalid".to_vec())
+	);
+	cleanup(&paths);
+}
+
 #[test]
 fn formats_utc_calendar_dates() {
 	assert_eq!(

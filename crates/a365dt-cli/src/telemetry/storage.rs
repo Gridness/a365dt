@@ -12,7 +12,7 @@ use super::{
 use crate::{
 	download::Status,
 	error::Error,
-	sqlite::{self, Durability, MigrationError},
+	sqlite::{self, Durability, MigrationError, OpenMode},
 };
 
 const INITIALIZATION_LOCK: &str = "telemetry-initialization.lock";
@@ -42,15 +42,18 @@ impl Store {
 		};
 		fs::create_dir_all(directory).map_err(open_error)?;
 		let _lock = initialization_lock(directory)?;
-		let initialize = !paths.data.exists();
-		let pool =
-			sqlite::connect(&paths.data, initialize, Durability::Telemetry)
-				.await
-				.map_err(open_error)?;
+		let mode = if paths.data.exists() {
+			OpenMode::Existing
+		} else {
+			OpenMode::Initialize
+		};
+		let pool = sqlite::connect(&paths.data, mode, Durability::Telemetry)
+			.await
+			.map_err(open_error)?;
 		if let Err(error) = migrate(&pool, &paths).await {
 			pool.close().await;
-			if initialize {
-				remove_new_database(&paths.data);
+			if matches!(mode, OpenMode::Initialize) {
+				sqlite::remove_new_database(&paths.data);
 			}
 			return Err(error);
 		}
@@ -365,22 +368,18 @@ async fn migrate(pool: &SqlitePool, paths: &Paths) -> Result<(), Error> {
 			.await
 			.map_err(migration_error)?;
 	if initialized {
-		let disabled = paths.disabled.try_exists().map_err(open_error)?;
-		let disabled_at_ms = disabled
-			.then(|| fs::read_to_string(&paths.disabled).ok())
-			.flatten()
-			.and_then(|timestamp| timestamp.parse::<u64>().ok())
-			.and_then(|timestamp| timestamp.checked_mul(1_000))
-			.and_then(|timestamp| i64::try_from(timestamp).ok());
-		let enabled_at_ms = (!disabled)
+		let disabled_at_ms = legacy_disabled_at(paths)?;
+		let enabled_at_ms = disabled_at_ms
+			.is_none()
 			.then(now_ms)
-			.and_then(|timestamp| i64::try_from(timestamp).ok());
+			.map(|timestamp| i64_from(timestamp, "enable timestamp"))
+			.transpose()?;
 		sqlx::query(
 			"UPDATE collection_state SET enabled = ?, \
 			 last_enabled_at_ms = ?, last_disabled_at_ms = ? \
 			 WHERE singleton = 1",
 		)
-		.bind(!disabled)
+		.bind(disabled_at_ms.is_none())
 		.bind(enabled_at_ms)
 		.bind(disabled_at_ms)
 		.execute(&mut *transaction)
@@ -389,6 +388,29 @@ async fn migrate(pool: &SqlitePool, paths: &Paths) -> Result<(), Error> {
 	}
 	transaction.commit().await.map_err(write_error)?;
 	validate_schema(pool).await
+}
+
+fn legacy_disabled_at(paths: &Paths) -> Result<Option<i64>, Error> {
+	if !paths.disabled.try_exists().map_err(open_error)? {
+		return Ok(None);
+	}
+	let timestamp = fs::read_to_string(&paths.disabled)
+		.map_err(open_error)?
+		.parse::<u64>()
+		.map_err(|error| {
+			open_error(format!(
+				"the local telemetry opt-out timestamp is invalid: {error}"
+			))
+		})?
+		.checked_mul(1_000)
+		.ok_or_else(|| {
+			open_error("the local telemetry opt-out timestamp is out of range")
+		})?;
+	i64::try_from(timestamp).map(Some).map_err(|error| {
+		open_error(format!(
+			"the local telemetry opt-out timestamp is out of range: {error}"
+		))
+	})
 }
 
 async fn validate_schema(pool: &SqlitePool) -> Result<(), Error> {
@@ -436,16 +458,6 @@ fn retire_legacy_files(paths: &Paths) -> Result<(), Error> {
 	Ok(())
 }
 
-fn remove_new_database(path: &Path) {
-	for path in sqlite::files(path) {
-		if let Err(error) = fs::remove_file(path)
-			&& error.kind() != io::ErrorKind::NotFound
-		{
-			break;
-		}
-	}
-}
-
 fn migration_error(error: MigrationError) -> Error {
 	match error {
 		MigrationError::Database(error) => open_error(error),
@@ -455,21 +467,21 @@ fn migration_error(error: MigrationError) -> Error {
 
 fn open_error(error: impl std::fmt::Display) -> Error {
 	Error::with_debug(
-		"Could not open the local telemetry; run `a365dt telemetry clear` to reset it.",
+		"Could not open the local telemetry. Run `a365dt doctor --debug` to inspect its database.",
 		error,
 	)
 }
 
-fn read_error(error: impl std::fmt::Display) -> Error {
+pub(super) fn read_error(error: impl std::fmt::Display) -> Error {
 	Error::with_debug(
-		"Could not read the local telemetry; run `a365dt telemetry clear` to reset it.",
+		"Could not read the local telemetry. Run `a365dt doctor --debug` to inspect its database.",
 		error,
 	)
 }
 
 fn write_error(error: impl std::fmt::Display) -> Error {
 	Error::with_debug(
-		"Could not update the local telemetry; run `a365dt telemetry clear` to reset it.",
+		"Could not update the local telemetry. Close other a365dt processes and retry.",
 		error,
 	)
 }

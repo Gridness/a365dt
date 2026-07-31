@@ -22,6 +22,12 @@ pub(crate) enum Durability {
 	Telemetry,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum OpenMode {
+	Existing,
+	Initialize,
+}
+
 pub(crate) enum MigrationError {
 	Database(sqlx::Error),
 	Invalid(String),
@@ -29,7 +35,7 @@ pub(crate) enum MigrationError {
 
 pub(crate) async fn connect(
 	path: &Path,
-	initialize: bool,
+	mode: OpenMode,
 	durability: Durability,
 ) -> Result<SqlitePool, sqlx::Error> {
 	let mut options = SqliteConnectOptions::new()
@@ -43,7 +49,7 @@ pub(crate) async fn connect(
 		.shared_cache(false)
 		.foreign_keys(true)
 		.busy_timeout(TIMEOUT);
-	if initialize {
+	if matches!(mode, OpenMode::Initialize) {
 		options = options.journal_mode(SqliteJournalMode::Wal);
 	}
 	SqlitePoolOptions::new()
@@ -146,6 +152,16 @@ pub(crate) fn size(path: &Path) -> io::Result<u64> {
 			Err(error) => Err(error),
 		}
 	})
+}
+
+pub(crate) fn remove_new_database(path: &Path) {
+	for path in files(path) {
+		if let Err(error) = fs::remove_file(path)
+			&& error.kind() != io::ErrorKind::NotFound
+		{
+			break;
+		}
+	}
 }
 
 fn sidecar(path: &Path, suffix: &str) -> PathBuf {

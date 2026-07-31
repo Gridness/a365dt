@@ -1,8 +1,12 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
+use sqlx::SqliteConnection;
 use tokio::sync::mpsc;
 
-use super::{InvocationId, Operation, Recorder, storage::Store};
+use super::{
+	InvocationId, Operation, Recorder,
+	storage::{Store, read_error},
+};
 use crate::{error::Error, sqlite};
 
 pub struct Snapshot {
@@ -38,7 +42,15 @@ pub struct Overhead {
 }
 
 pub(super) async fn capture(store: &Store) -> Result<Snapshot, Error> {
-	let state = store.collection_state().await?;
+	let mut transaction = store.pool.begin().await.map_err(read_error)?;
+	let (enabled, last_enabled_at, last_disabled_at, last_cleared_at) =
+		sqlx::query_as::<_, (bool, Option<i64>, Option<i64>, Option<i64>)>(
+			"SELECT enabled, last_enabled_at_ms, last_disabled_at_ms, \
+			 last_cleared_at_ms FROM collection_state WHERE singleton = 1",
+		)
+		.fetch_one(&mut *transaction)
+		.await
+		.map_err(read_error)?;
 	let (first_recorded_at, last_recorded_at) =
 		sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
 			"SELECT MIN(observed_at_ms), MAX(observed_at_ms) FROM (\
@@ -48,7 +60,7 @@ pub(super) async fn capture(store: &Store) -> Result<Snapshot, Error> {
 			 SELECT observed_at_ms FROM performance_events\
 			 )",
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(&mut *transaction)
 		.await
 		.map_err(read_error)?;
 	let (first_download_at, last_download_at) =
@@ -56,20 +68,21 @@ pub(super) async fn capture(store: &Store) -> Result<Snapshot, Error> {
 			"SELECT MIN(observed_at_ms), MAX(observed_at_ms) \
 			 FROM download_batches",
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(&mut *transaction)
 		.await
 		.map_err(read_error)?;
 	let schema_version = sqlx::query_scalar::<_, i64>(
 		"SELECT MAX(version) FROM _sqlx_migrations",
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(&mut *transaction)
 	.await
 	.map_err(read_error)?;
-	let counters = counters(store).await?;
-	let samples = download_samples(store).await?;
-	let performance = performance(store).await?;
+	let counters = counters(&mut transaction).await?;
+	let samples = download_samples(&mut transaction).await?;
+	let performance = performance(&mut transaction).await?;
+	transaction.commit().await.map_err(read_error)?;
 	Ok(Snapshot {
-		enabled: state.enabled,
+		enabled,
 		data_path: store.paths.data.clone(),
 		disabled_path: store.paths.disabled.clone(),
 		data_bytes: Some(sqlite::size(&store.paths.data).map_err(read_error)?),
@@ -78,22 +91,24 @@ pub(super) async fn capture(store: &Store) -> Result<Snapshot, Error> {
 		last_recorded_at: timestamp(last_recorded_at)?,
 		first_download_at: timestamp(first_download_at)?,
 		last_download_at: timestamp(last_download_at)?,
-		last_enabled_at: state_timestamp(state.last_enabled_at_ms),
-		last_disabled_at: state_timestamp(state.last_disabled_at_ms),
-		last_cleared_at: state_timestamp(state.last_cleared_at_ms),
+		last_enabled_at: timestamp(last_enabled_at)?,
+		last_disabled_at: timestamp(last_disabled_at)?,
+		last_cleared_at: timestamp(last_cleared_at)?,
 		counters,
 		samples,
 		performance,
 	})
 }
 
-async fn counters(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
+async fn counters(
+	connection: &mut SqliteConnection,
+) -> Result<BTreeMap<String, u64>, Error> {
 	let mut counters = BTreeMap::new();
 	for (command, outcome, count) in sqlx::query_as::<_, (String, String, i64)>(
 		"SELECT command, outcome, COUNT(*) FROM command_events \
 			 GROUP BY command, outcome",
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(&mut *connection)
 	.await
 	.map_err(read_error)?
 	{
@@ -106,7 +121,7 @@ async fn counters(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
 		"SELECT catalogue_result, COUNT(*) FROM series_selection_events \
 		 WHERE catalogue_result IS NOT NULL GROUP BY catalogue_result",
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(&mut *connection)
 	.await
 	.map_err(read_error)?
 	{
@@ -123,7 +138,7 @@ async fn counters(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
 	}
 	let batches =
 		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM download_batches")
-			.fetch_one(&store.pool)
+			.fetch_one(&mut *connection)
 			.await
 			.map_err(read_error)?;
 	if batches > 0 {
@@ -132,7 +147,7 @@ async fn counters(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
 	for (status, count) in sqlx::query_as::<_, (String, i64)>(
 		"SELECT status, COUNT(*) FROM download_outcomes GROUP BY status",
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(&mut *connection)
 	.await
 	.map_err(read_error)?
 	{
@@ -143,7 +158,7 @@ async fn counters(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
 		"SELECT COUNT(*), COALESCE(SUM(downloaded_bytes), 0) \
 		 FROM download_outcomes WHERE downloaded_bytes IS NOT NULL",
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(&mut *connection)
 	.await
 	.map_err(read_error)?;
 	if downloaded > 0 {
@@ -153,13 +168,13 @@ async fn counters(store: &Store) -> Result<BTreeMap<String, u64>, Error> {
 }
 
 async fn download_samples(
-	store: &Store,
+	connection: &mut SqliteConnection,
 ) -> Result<BTreeMap<String, Vec<u64>>, Error> {
 	let samples = sqlx::query_scalar::<_, i64>(
 		"SELECT duration_us FROM download_batches \
 		 ORDER BY observed_at_ms DESC, id DESC LIMIT 101",
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(&mut *connection)
 	.await
 	.map_err(read_error)?
 	.into_iter()
@@ -172,7 +187,9 @@ async fn download_samples(
 	})
 }
 
-async fn performance(store: &Store) -> Result<Vec<PerformanceMetric>, Error> {
+async fn performance(
+	connection: &mut SqliteConnection,
+) -> Result<Vec<PerformanceMetric>, Error> {
 	let mut samples = BTreeMap::<String, Vec<u64>>::new();
 	for (operation, duration) in sqlx::query_as::<_, (String, i64)>(
 		"SELECT operation, duration_us FROM (\
@@ -181,7 +198,7 @@ async fn performance(store: &Store) -> Result<Vec<PerformanceMetric>, Error> {
 		 ) AS position FROM performance_events\
 		 ) WHERE position <= 101 ORDER BY operation, position",
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(&mut *connection)
 	.await
 	.map_err(read_error)?
 	{
@@ -197,7 +214,7 @@ async fn performance(store: &Store) -> Result<Vec<PerformanceMetric>, Error> {
 			 COALESCE(SUM(work_units), 0) FROM performance_events \
 			 GROUP BY operation ORDER BY operation",
 		)
-		.fetch_all(&store.pool)
+		.fetch_all(&mut *connection)
 		.await
 		.map_err(read_error)?
 	{
@@ -247,17 +264,6 @@ fn timestamp(value: Option<i64>) -> Result<Option<u64>, Error> {
 		.transpose()
 }
 
-fn state_timestamp(value: Option<u64>) -> Option<u64> {
-	value.map(|value| value / 1_000)
-}
-
 fn u64_from(value: i64) -> Result<u64, Error> {
 	u64::try_from(value).map_err(read_error)
-}
-
-fn read_error(error: impl std::fmt::Display) -> Error {
-	Error::with_debug(
-		"Could not read the local telemetry; run `a365dt telemetry clear` to reset it.",
-		error,
-	)
 }
