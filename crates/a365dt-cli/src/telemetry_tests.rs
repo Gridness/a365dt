@@ -134,21 +134,23 @@ async fn writer_commits_one_second_batches_and_finish_drains_the_tail() {
 	);
 	tokio::time::advance(Duration::from_millis(1)).await;
 	tokio::time::resume();
-	let counters = tokio::time::timeout(Duration::from_secs(5), async {
+	let committed = tokio::time::timeout(Duration::from_secs(5), async {
 		loop {
-			let counters = writer.snapshot().await.unwrap().counters;
-			if !counters.is_empty() {
-				break counters;
+			let committed = sqlx::query_scalar::<_, i64>(
+				"SELECT COUNT(*) FROM command_events",
+			)
+			.fetch_one(&mut *connection)
+			.await
+			.unwrap();
+			if committed > 0 {
+				break committed;
 			}
 			tokio::task::yield_now().await;
 		}
 	})
 	.await
 	.unwrap();
-	assert_eq!(
-		counters,
-		BTreeMap::from([("commands.download.success".into(), 1)])
-	);
+	assert_eq!(committed, 1);
 
 	recorder.record_command(Command::Update, CommandOutcome::Failure);
 	writer.finish().await.unwrap();
