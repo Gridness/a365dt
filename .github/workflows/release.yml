@@ -3,12 +3,6 @@ name: Release
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      winget_version:
-        description: Existing release version to resubmit to WinGet
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -23,7 +17,6 @@ env:
 jobs:
   release-pr:
     name: Update release PR
-    if: github.event_name == 'push'
 
     runs-on: ubuntu-24.04
 
@@ -91,12 +84,6 @@ jobs:
           - runner: macos-15
             target: aarch64-apple-darwin
             test: false
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            test: false
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            test: false
 
     runs-on: ${{ matrix.runner }}
 
@@ -127,13 +114,7 @@ jobs:
         run: cargo build --locked --release --bin a365dt --target ${{ matrix.target }}
 
       - name: Smoke test
-        if: runner.os != 'Windows'
         run: target/${{ matrix.target }}/release/a365dt --version
-
-      - name: Smoke test
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: target/${{ matrix.target }}/release/a365dt.exe --version
 
   merge-release-pr:
     name: Merge release PR
@@ -173,19 +154,9 @@ jobs:
 
       - name: Read version
         id: version
-        env:
-          WINGET_VERSION: ${{ inputs.winget_version }}
         run: |
           echo "release=false" >> "$GITHUB_OUTPUT"
           current="$(jq -r '.["."] // empty' .release-please-manifest.json)"
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ -z "$WINGET_VERSION" || "$WINGET_VERSION" != "$current" ]]; then
-              echo "Requested WinGet version ($WINGET_VERSION) must match the current release ($current)" >&2
-              exit 1
-            fi
-            echo "version=$WINGET_VERSION" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           previous=""
           if git rev-parse HEAD^ >/dev/null 2>&1; then
             previous="$(git show HEAD^:.release-please-manifest.json 2>/dev/null | jq -r '.["."] // empty' || true)"
@@ -234,10 +205,6 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
 
     runs-on: ${{ matrix.runner }}
 
@@ -264,21 +231,11 @@ jobs:
         run: cargo build --locked --release --bin a365dt --target ${{ matrix.target }}
 
       - name: Package
-        if: runner.os != 'Windows'
         run: |
           install -d dist/package
           install -m 755 "target/$TARGET/release/a365dt" dist/package/a365dt
           install -m 644 LICENSE dist/package/LICENSE
           tar -C dist/package -czf "dist/a365dt-v$VERSION-$TARGET.tar.gz" a365dt LICENSE
-
-      - name: Package
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/package | Out-Null
-          Copy-Item "target/$env:TARGET/release/a365dt.exe" dist/package/a365dt.exe
-          Copy-Item LICENSE dist/package/LICENSE
-          Compress-Archive -Path dist/package/* -DestinationPath "dist/a365dt-v$env:VERSION-$env:TARGET.zip"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -336,18 +293,17 @@ jobs:
       - name: Write checksums
         run: |
           cd dist
-          sha256sum a365dt-*.tar.gz a365dt-*.zip > SHA256SUMS
+          sha256sum a365dt-*.tar.gz > SHA256SUMS
 
       - name: Attest release assets
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: |
             dist/*.tar.gz
-            dist/*.zip
             dist/SHA256SUMS
 
       - name: Upload release assets
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+        run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
 
       - name: Publish release
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
@@ -419,111 +375,3 @@ jobs:
       - name: Push formula
         run: |
           git -C tap push origin main
-
-  publish-winget:
-    name: Submit WinGet package
-    needs: [detect-release, publish-github]
-    if: >-
-      ${{ always() &&
-      ((needs.detect-release.outputs.release == 'true' && needs.publish-github.result == 'success') ||
-      github.event_name == 'workflow_dispatch') }}
-
-    runs-on: windows-2025
-
-    permissions:
-      actions: read
-      contents: read
-
-    env:
-      GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-      VERSION: ${{ needs.detect-release.outputs.version }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: source
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: github.event_name == 'push'
-        with:
-          pattern: release-*-pc-windows-msvc
-          merge-multiple: true
-          path: dist
-
-      - name: Download existing release assets
-        if: github.event_name == 'workflow_dispatch'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY --pattern "*pc-windows-msvc.zip" --dir dist
-
-      - name: Generate manifests
-        shell: pwsh
-        run: |
-          $x64 = (Get-FileHash "dist/a365dt-v$env:VERSION-x86_64-pc-windows-msvc.zip" -Algorithm SHA256).Hash
-          $arm64 = (Get-FileHash "dist/a365dt-v$env:VERSION-aarch64-pc-windows-msvc.zip" -Algorithm SHA256).Hash
-          $releaseDate = git -C source show -s --format=%cs HEAD
-          $replacements = [ordered]@{
-            '@REPOSITORY@' = $env:GITHUB_REPOSITORY
-            '@VERSION@' = $env:VERSION
-            '@RELEASE_DATE@' = $releaseDate
-            '@WINDOWS_X64_SHA256@' = $x64
-            '@WINDOWS_ARM64_SHA256@' = $arm64
-          }
-          New-Item -ItemType Directory -Force winget | Out-Null
-          Get-ChildItem source/packaging/winget/*.yaml | ForEach-Object {
-            $content = Get-Content $_.FullName -Raw
-            foreach ($entry in $replacements.GetEnumerator()) {
-              $content = $content.Replace($entry.Key, $entry.Value)
-            }
-            Set-Content "winget/$($_.Name)" $content -Encoding utf8NoBOM
-          }
-
-      - name: Check existing submission
-        id: existing
-        shell: pwsh
-        run: |
-          gh api "repos/microsoft/winget-pkgs/contents/manifests/g/Gridness/a365dt/$env:VERSION" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            "skip=true" >> $env:GITHUB_OUTPUT
-            exit 0
-          }
-          $open = gh pr list --repo microsoft/winget-pkgs --state open --search "Gridness.a365dt $env:VERSION in:title" --json number --jq 'length'
-          "skip=$($open -ne '0')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
-
-      - name: Download WingetCreate
-        if: steps.existing.outputs.skip != 'true'
-        shell: pwsh
-        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
-
-      - name: Submit manifests
-        if: steps.existing.outputs.skip != 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.WINGET_PAT }}
-        run: |
-          $submission = ./wingetcreate.exe submit --prtitle "Gridness.a365dt version $env:VERSION" --token $env:GH_TOKEN --no-open winget 2>&1
-          $exitCode = $LASTEXITCODE
-          $submission | ForEach-Object { Write-Host $_ }
-          if ($exitCode -ne 0) {
-            throw "WingetCreate failed with exit code $exitCode"
-          }
-
-          $match = [regex]::Match(($submission -join "`n"), 'https://github\.com/microsoft/winget-pkgs/pull/(\d+)')
-          if (!$match.Success) {
-            throw "WingetCreate did not report the created pull request"
-          }
-          $pr = $match.Groups[1].Value
-          $response = gh api "repos/microsoft/winget-pkgs/pulls/$pr"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to read WinGet pull request $pr"
-          }
-          $body = (($response -join "`n") | ConvertFrom-Json).body.Replace('- [ ]', '- [x]')
-          gh api --method PATCH "repos/microsoft/winget-pkgs/pulls/$pr" --raw-field "body=$body" --silent
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to update WinGet pull request $pr"
-          }
-          gh api --method POST "repos/microsoft/winget-pkgs/issues/$pr/comments" --raw-field 'body=@microsoft-github-policy-service agree' --silent
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to accept the Microsoft CLA on WinGet pull request $pr"
-          }

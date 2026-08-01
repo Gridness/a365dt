@@ -162,22 +162,17 @@ fn open_browser(url: &str) -> bool {
 	spawn_browser(Command::new("open").arg(url))
 }
 
-#[cfg(target_os = "windows")]
-fn open_browser(url: &str) -> bool {
-	spawn_browser(Command::new("cmd").args(["/C", "start", "", url]))
-}
-
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_browser(url: &str) -> bool {
 	spawn_browser(Command::new("xdg-open").arg(url))
 }
 
-#[cfg(not(any(unix, target_os = "windows")))]
+#[cfg(not(unix))]
 fn open_browser(_url: &str) -> bool {
 	false
 }
 
-#[cfg(any(unix, target_os = "windows"))]
+#[cfg(unix)]
 fn spawn_browser(command: &mut Command) -> bool {
 	command
 		.stdin(Stdio::null())

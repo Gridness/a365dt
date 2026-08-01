@@ -98,4 +98,4 @@ Use `just bench-smoke` to dry-run the benchmark for a single iteration to ensure
 
 ## Platform support
 
-Tests and features must support Linux, macOS and Windows unless feature is explicitly OS-specific.
+Tests and features must support Linux and macOS unless a feature is explicitly OS-specific.
