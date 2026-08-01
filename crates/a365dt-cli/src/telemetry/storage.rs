@@ -21,7 +21,7 @@ mod clearing;
 pub(super) use clearing::ClearRange;
 
 const INITIALIZATION_LOCK: &str = "telemetry-initialization.lock";
-static MIGRATOR: Migrator = sqlx::migrate!("./migrations/telemetry");
+pub(super) static MIGRATOR: Migrator = sqlx::migrate!("./migrations/telemetry");
 
 #[derive(Clone)]
 pub(super) struct Store {

@@ -16,6 +16,7 @@ dependencies = [
  "divan",
  "image",
  "indicatif",
+ "libc",
  "pretty_assertions",
  "pulldown-cmark",
  "rapidfuzz",

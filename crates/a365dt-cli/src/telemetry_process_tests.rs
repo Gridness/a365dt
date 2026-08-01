@@ -279,6 +279,18 @@ async fn worker_state_control() {
 	store.close().await;
 }
 
+#[tokio::test]
+#[ignore]
+async fn worker_migration_open() {
+	match Store::open(paths()).await {
+		Ok(store) => {
+			store.close().await;
+			barrier("OPENED");
+		}
+		Err(_) => barrier("BLOCKED"),
+	}
+}
+
 fn paths() -> Paths {
 	let root = std::env::current_dir().unwrap();
 	Paths {

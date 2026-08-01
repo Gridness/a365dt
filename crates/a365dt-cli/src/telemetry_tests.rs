@@ -9,11 +9,12 @@ use tokio::sync::mpsc;
 use uuid::{Uuid, Version};
 
 use super::{
-	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Paths,
-	Recorder, Writer,
+	CatalogueUse, Command, CommandOutcome, InvocationId, MigrationPreparation,
+	Operation, Paths, Recorder, TelemetryRecovery, Writer,
 	display::format_timestamp,
+	ensure_migration_idle, prepare_migration_at,
 	recording::{DownloadOutcome, Observation, ObservationKind},
-	snapshot,
+	recreate_migration_at, snapshot,
 	storage::Store,
 };
 use crate::{
@@ -299,6 +300,85 @@ async fn invalid_legacy_opt_out_keeps_every_legacy_file() {
 		),
 		(b"legacy".to_vec(), b"legacy".to_vec(), b"invalid".to_vec())
 	);
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn recreates_damaged_migration_telemetry_with_the_chosen_state() {
+	let mut enabled = Vec::new();
+	for (name, recovery) in [
+		("recreate-enabled", TelemetryRecovery::Enabled),
+		("recreate-disabled", TelemetryRecovery::Disabled),
+	] {
+		let paths = paths(name);
+		let directory = paths.data.parent().unwrap();
+		fs::create_dir_all(directory).unwrap();
+		fs::write(&paths.data, b"damaged").unwrap();
+
+		recreate_migration_at(directory, recovery).await.unwrap();
+		let store = Store::open(Paths::at(directory.to_owned())).await.unwrap();
+		enabled.push(store.collection_state().await.unwrap().enabled);
+		store.close().await;
+		cleanup(&paths);
+	}
+
+	assert_eq!(enabled, [true, false]);
+
+	let paths = paths("recreate-delete-failure");
+	fs::create_dir_all(&paths.data).unwrap();
+	let error = recreate_migration_at(
+		paths.data.parent().unwrap(),
+		TelemetryRecovery::Enabled,
+	)
+	.await
+	.unwrap_err();
+	assert!(error.to_string().contains("Could not recreate"));
+	cleanup(&paths);
+}
+
+#[tokio::test]
+async fn migration_validation_distinguishes_damage_from_operational_failures() {
+	let migration_paths = paths("migration-validation");
+	let directory = migration_paths.data.parent().unwrap();
+	fs::create_dir_all(directory).unwrap();
+	fs::write(&migration_paths.data, b"damaged").unwrap();
+	assert_eq!(
+		prepare_migration_at(directory).await.unwrap(),
+		MigrationPreparation::Damaged,
+	);
+	cleanup(&migration_paths);
+
+	let migration_paths = paths("migration-overflowing-opt-out");
+	let directory = migration_paths.data.parent().unwrap();
+	fs::create_dir_all(directory).unwrap();
+	fs::write(directory.join("telemetry-disabled"), u64::MAX.to_string())
+		.unwrap();
+	assert_eq!(
+		prepare_migration_at(directory).await.unwrap(),
+		MigrationPreparation::Damaged,
+	);
+	cleanup(&migration_paths);
+
+	let migration_paths = paths("migration-operational-error");
+	let directory = migration_paths.data.parent().unwrap();
+	fs::create_dir_all(directory.parent().unwrap()).unwrap();
+	fs::write(directory, b"not a directory").unwrap();
+	assert!(prepare_migration_at(directory).await.is_err());
+	cleanup(&migration_paths);
+}
+
+#[tokio::test]
+async fn migration_lock_preserves_inactive_legacy_telemetry() {
+	let paths = paths("active-home-migration");
+	let store = Store::open(paths.clone()).await.unwrap();
+	store.close().await;
+	let files = crate::sqlite::files(&paths.data);
+	fs::write(&files[1], b"wal").unwrap();
+	fs::write(&files[2], b"shm").unwrap();
+	let before = files.each_ref().map(|path| fs::read(path).unwrap());
+	let migration_lock = ensure_migration_idle(&paths.data).unwrap().unwrap();
+	migration_lock.close().unwrap();
+	assert_eq!(files.each_ref().map(|path| fs::read(path).unwrap()), before,);
 	cleanup(&paths);
 }
 
