@@ -390,6 +390,7 @@ fn telemetry_migration_lock() {
 	let mut worker = Worker::spawn(TELEMETRY_MIGRATION_WORKER, &directory);
 	worker.wait_for("BLOCKED");
 	worker.finish();
+	fs::remove_file(&shared_memory).unwrap();
 	migration_lock.close().unwrap();
 	assert!(!shared_memory.exists());
 	fs::remove_dir_all(directory).unwrap();
