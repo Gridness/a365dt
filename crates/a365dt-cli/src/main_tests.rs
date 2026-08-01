@@ -8,6 +8,7 @@ use super::{
 	Args, CacheCommand, Commands, ConfigCommand, TelemetryCommand,
 	cancel_download,
 	command_line::{OwnerRoute, owner_route, route_title_query},
+	preferences::MuxFormat,
 };
 
 #[test]
@@ -71,6 +72,21 @@ fn parses_mux_after_query_and_its_aliases() {
 
 		assert_eq!((args.query, args.mux), (vec!["Frieren".to_owned()], true));
 	}
+}
+
+#[test]
+fn parses_mux_formats_and_rejects_unknown_values() {
+	for (value, expected) in [("mp4", MuxFormat::Mp4), ("mkv", MuxFormat::Mkv)]
+	{
+		let args =
+			Args::try_parse_from(["a365dt", "Frieren", "--format", value])
+				.unwrap();
+
+		assert_eq!(args.format, Some(expected));
+	}
+	assert!(
+		Args::try_parse_from(["a365dt", "--format", "avi", "Frieren"]).is_err()
+	);
 }
 
 #[test]

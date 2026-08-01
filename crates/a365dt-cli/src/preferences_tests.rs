@@ -3,7 +3,8 @@ use std::{fs, num::NonZeroUsize, process, time::SystemTime};
 use pretty_assertions::assert_eq;
 
 use super::{
-	Inspection, Overrides, Preferences, Snapshot, Source, Sources, Store,
+	Inspection, MuxFormat, Overrides, Preferences, Snapshot, Source, Sources,
+	Store,
 };
 use crate::error::Error;
 
@@ -22,6 +23,7 @@ fn resolves_sparse_download_preferences_with_cli_precedence() {
 			output: None,
 			jobs: NonZeroUsize::new(2),
 			mux: true,
+			format: None,
 		})
 		.unwrap();
 
@@ -31,6 +33,33 @@ fn resolves_sparse_download_preferences_with_cli_precedence() {
 			output: fixture.home.join("Videos"),
 			jobs: NonZeroUsize::new(2).unwrap(),
 			mux: true,
+			format: MuxFormat::Mp4,
+		}
+	);
+}
+
+#[test]
+fn command_line_format_overrides_config_and_implies_muxing() {
+	let fixture = Fixture::new("format-override");
+	fs::write(
+		fixture.application_home.join("config.toml"),
+		"mux = false\nformat = \"mkv\"\n",
+	)
+	.unwrap();
+
+	assert_eq!(
+		fixture
+			.store()
+			.load(Overrides {
+				format: Some(MuxFormat::Mp4),
+				..Overrides::default()
+			})
+			.unwrap(),
+		Preferences {
+			output: fixture.current_directory.clone(),
+			jobs: NonZeroUsize::new(4).unwrap(),
+			mux: true,
+			format: MuxFormat::Mp4,
 		}
 	);
 }
@@ -102,6 +131,7 @@ fn saves_loads_and_resets_download_preferences() {
 		output: fixture.home.join("Anime"),
 		jobs: NonZeroUsize::new(8).unwrap(),
 		mux: true,
+		format: MuxFormat::Mkv,
 	};
 
 	store.save(&expected).unwrap();
@@ -115,6 +145,7 @@ fn saves_loads_and_resets_download_preferences() {
 			output: fixture.current_directory.clone(),
 			jobs: NonZeroUsize::new(4).unwrap(),
 			mux: false,
+			format: MuxFormat::Mp4,
 		}
 	);
 }
@@ -134,11 +165,13 @@ fn reports_the_source_of_every_download_preference() {
 					output: fixture.current_directory.clone(),
 					jobs: NonZeroUsize::new(8).unwrap(),
 					mux: false,
+					format: MuxFormat::Mp4,
 				},
 				sources: Sources {
 					output: Source::BuiltIn,
 					jobs: Source::Config,
 					mux: Source::BuiltIn,
+					format: Source::BuiltIn,
 				},
 			},
 		}
@@ -147,7 +180,11 @@ fn reports_the_source_of_every_download_preference() {
 
 #[test]
 fn rejects_unknown_keys_and_invalid_values() {
-	for (name, contents) in [("unknown", "job = 8\n"), ("zero", "jobs = 0\n")] {
+	for (name, contents) in [
+		("unknown", "job = 8\n"),
+		("zero", "jobs = 0\n"),
+		("format", "format = \"avi\"\n"),
+	] {
 		let fixture = Fixture::new(name);
 		fs::write(fixture.application_home.join("config.toml"), contents)
 			.unwrap();
