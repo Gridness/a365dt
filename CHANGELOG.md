@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/Gridness/a365dt/compare/v2.1.0...v2.2.0) (2026-08-01)
+
+
+### Features
+
+* **cli:** support configurable MP4 muxing ([#92](https://github.com/Gridness/a365dt/issues/92)) ([5449f06](https://github.com/Gridness/a365dt/commit/5449f06328a8fd5fe12996fd43015c9d2ff134a1))
+
 ## [2.1.0](https://github.com/Gridness/a365dt/compare/v2.0.0...v2.1.0) (2026-08-01)
 
 
