@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/Gridness/a365dt/compare/v1.0.1...v1.1.0) (2026-08-01)
+
+
+### Features
+
+* **cli:** migrate application state to fixed homes ([#86](https://github.com/Gridness/a365dt/issues/86)) ([732e6c4](https://github.com/Gridness/a365dt/commit/732e6c43258dea901cca0313f5fbd0f13a5e6c4c))
+
 ## [1.0.1](https://github.com/Gridness/a365dt/compare/v1.0.0...v1.0.1) (2026-07-31)
 
 
