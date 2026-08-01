@@ -39,11 +39,11 @@ fn resolves_sparse_download_preferences_with_cli_precedence() {
 }
 
 #[test]
-fn command_line_format_overrides_config_and_implies_muxing() {
+fn command_line_mux_format_overrides_config_and_implies_muxing() {
 	let fixture = Fixture::new("format-override");
 	fs::write(
 		fixture.application_home.join("config.toml"),
-		"mux = false\nformat = \"mkv\"\n",
+		"mux = false\nmux_format = \"mkv\"\n",
 	)
 	.unwrap();
 
@@ -183,7 +183,7 @@ fn rejects_unknown_keys_and_invalid_values() {
 	for (name, contents) in [
 		("unknown", "job = 8\n"),
 		("zero", "jobs = 0\n"),
-		("format", "format = \"avi\"\n"),
+		("mux-format", "mux_format = \"avi\"\n"),
 	] {
 		let fixture = Fixture::new(name);
 		fs::write(fixture.application_home.join("config.toml"), contents)

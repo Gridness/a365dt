@@ -143,7 +143,7 @@ impl Store {
 				snapshot.sources.mux.label().into(),
 			],
 			[
-				"Format".into(),
+				"Mux format".into(),
 				snapshot.preferences.format.to_string(),
 				snapshot.sources.format.label().into(),
 			],

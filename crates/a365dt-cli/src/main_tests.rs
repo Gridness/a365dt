@@ -79,13 +79,14 @@ fn parses_mux_formats_and_rejects_unknown_values() {
 	for (value, expected) in [("mp4", MuxFormat::Mp4), ("mkv", MuxFormat::Mkv)]
 	{
 		let args =
-			Args::try_parse_from(["a365dt", "Frieren", "--format", value])
+			Args::try_parse_from(["a365dt", "Frieren", "--mux-format", value])
 				.unwrap();
 
-		assert_eq!(args.format, Some(expected));
+		assert_eq!(args.mux_format, Some(expected));
 	}
 	assert!(
-		Args::try_parse_from(["a365dt", "--format", "avi", "Frieren"]).is_err()
+		Args::try_parse_from(["a365dt", "--mux-format", "avi", "Frieren"])
+			.is_err()
 	);
 }
 

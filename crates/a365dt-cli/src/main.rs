@@ -87,7 +87,7 @@ struct Args {
 
 	/// Mux separate ASS subtitles into this container without confirmation.
 	#[arg(long, value_name = "FORMAT")]
-	format: Option<preferences::MuxFormat>,
+	mux_format: Option<preferences::MuxFormat>,
 
 	/// Show technical error details.
 	#[arg(long, global = true)]
@@ -535,7 +535,7 @@ async fn run(
 		output: args.output.clone(),
 		jobs: args.jobs,
 		mux: args.mux,
-		format: args.format,
+		format: args.mux_format,
 	})?;
 	preferences::warn_if_high_concurrency(&preferences);
 	startup::show(store).await;

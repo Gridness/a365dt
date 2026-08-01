@@ -103,7 +103,7 @@ struct FilePreferences {
 	output: Option<String>,
 	jobs: Option<NonZeroUsize>,
 	mux: Option<bool>,
-	format: Option<MuxFormat>,
+	mux_format: Option<MuxFormat>,
 }
 
 enum FileState {
@@ -238,7 +238,8 @@ impl Store {
 		} else {
 			(false, Source::BuiltIn)
 		};
-		let (format, format_source) = match (overrides.format, file.format) {
+		let (format, format_source) = match (overrides.format, file.mux_format)
+		{
 			(Some(format), _) => (format, Source::CommandLine),
 			(None, Some(format)) => (format, Source::Config),
 			(None, None) => (MuxFormat::default(), Source::BuiltIn),
@@ -291,7 +292,7 @@ impl Store {
 			output: Some(output.to_owned()),
 			jobs: Some(preferences.jobs),
 			mux: Some(preferences.mux),
-			format: Some(preferences.format),
+			mux_format: Some(preferences.format),
 		})
 		.map_err(|error| {
 			Error::with_debug("Could not encode Download preferences.", error)
