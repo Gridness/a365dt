@@ -216,6 +216,9 @@ async fn main() -> ExitCode {
 		return ExitCode::FAILURE;
 	}
 	command_line::route_title_query(&mut args);
+	if let Some(Commands::Update { .. }) = args.command.as_ref() {
+		println!("a365dt {}\n", env!("CARGO_PKG_VERSION"));
+	}
 	let owner_route = command_line::owner_route(&args);
 	if owner_route == OwnerRoute::Purge {
 		let Some(Commands::Purge { yes }) = args.command.as_ref() else {
