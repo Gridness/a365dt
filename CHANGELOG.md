@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/Gridness/a365dt/compare/v1.1.0...v2.0.0) (2026-08-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* Windows is no longer tested, packaged, or supported.
+
+### Features
+
+* drop Windows support ([#88](https://github.com/Gridness/a365dt/issues/88)) ([6616bcc](https://github.com/Gridness/a365dt/commit/6616bcc448853cafc115ba617be4b95bf698b97d))
+
 ## [1.1.0](https://github.com/Gridness/a365dt/compare/v1.0.1...v1.1.0) (2026-08-01)
 
 
