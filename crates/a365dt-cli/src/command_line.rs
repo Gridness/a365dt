@@ -1,13 +1,17 @@
 use clap::{Command, CommandFactory};
 use rapidfuzz::distance::osa;
 
-use super::{Args, CacheCommand, Commands, TelemetryCommand, completion_shell};
+use super::{
+	Args, CacheCommand, Commands, ConfigCommand, TelemetryCommand,
+	completion_shell,
+};
 use crate::search::typo_budget;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnerRoute {
 	Purge,
 	Stateless,
+	PreferencesOnly,
 	TelemetryControl,
 	CachePruneAndTelemetry,
 	CacheAndTelemetry,
@@ -18,6 +22,7 @@ pub fn owner_route(args: &Args) -> OwnerRoute {
 		Some(Commands::Purge { .. }) => OwnerRoute::Purge,
 		Some(Commands::Telemetry { .. }) => OwnerRoute::TelemetryControl,
 		Some(Commands::Completions { .. }) => OwnerRoute::Stateless,
+		Some(Commands::Config { .. }) => OwnerRoute::PreferencesOnly,
 		Some(Commands::Cache {
 			command: CacheCommand::Prune { .. },
 		}) => OwnerRoute::CachePruneAndTelemetry,
@@ -94,6 +99,25 @@ fn title_query(args: &Args) -> Option<Vec<String>> {
 		{
 			("completions", arguments.clone())
 		}
+		Some(Commands::Config {
+			command: Some(ConfigCommand::Reset { yes: false, query }),
+		}) if !query.is_empty() => (
+			"config",
+			std::iter::once("reset".to_owned())
+				.chain(query.clone())
+				.collect(),
+		),
+		Some(Commands::Config {
+			command: Some(ConfigCommand::Show { query }),
+		}) if !query.is_empty() => (
+			"config",
+			std::iter::once("show".to_owned())
+				.chain(query.clone())
+				.collect(),
+		),
+		Some(Commands::Config {
+			command: Some(ConfigCommand::Query(query)),
+		}) => ("config", query.clone()),
 		Some(Commands::Doctor { query }) if !query.is_empty() => {
 			("doctor", query.clone())
 		}
