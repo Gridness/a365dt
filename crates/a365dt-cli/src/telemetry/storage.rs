@@ -21,7 +21,7 @@ mod clearing;
 pub(super) use clearing::ClearRange;
 
 const INITIALIZATION_LOCK: &str = "telemetry-initialization.lock";
-static MIGRATOR: Migrator = sqlx::migrate!("./migrations/telemetry");
+pub(super) static MIGRATOR: Migrator = sqlx::migrate!("./migrations/telemetry");
 
 #[derive(Clone)]
 pub(super) struct Store {
@@ -61,6 +61,10 @@ impl Store {
 				sqlite::remove_new_database(&paths.data);
 			}
 			return Err(error);
+		}
+		if let Err(error) = crate::app_files::private_file(&paths.data) {
+			pool.close().await;
+			return Err(open_error(error));
 		}
 		let warning = retire_legacy_files(&paths).err();
 		Ok(Self {

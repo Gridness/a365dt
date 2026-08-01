@@ -4,8 +4,8 @@ mod writer;
 
 pub(crate) use catalogue::{Catalogue, MAX_AGE};
 pub(crate) use storage::{
-	CompletedRelease, Inspection, RebuildPermission, Release, ReleaseState,
-	Store, prune,
+	CompletedRelease, Inspection, MigrationPreparation, RebuildPermission,
+	Release, ReleaseState, Store, prepare_migration_at, prune,
 };
 pub(crate) use writer::{LoadedCatalogue, Writer};
 

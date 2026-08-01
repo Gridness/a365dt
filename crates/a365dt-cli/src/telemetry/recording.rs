@@ -20,7 +20,6 @@ enum Work {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
 	CachePrune,
-	Completions,
 	Doctor,
 	Download,
 	Stats,
@@ -144,7 +143,6 @@ impl Command {
 	pub(super) fn database_name(self) -> &'static str {
 		match self {
 			Self::CachePrune => "cache_prune",
-			Self::Completions => "completions",
 			Self::Doctor => "doctor",
 			Self::Download => "download",
 			Self::Stats => "stats",

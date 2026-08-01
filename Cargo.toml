@@ -17,6 +17,7 @@ clap_complete = "4"
 console = "0.16"
 directories = "6"
 indicatif = "0.18"
+libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 rapidfuzz = "0.5"

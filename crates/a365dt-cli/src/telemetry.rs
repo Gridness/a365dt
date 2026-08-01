@@ -6,6 +6,7 @@ use crate::{app_files, error::Error, ui};
 
 mod clearing;
 mod display;
+mod migration;
 mod recording;
 mod snapshot;
 mod storage;
@@ -17,6 +18,10 @@ use clearing::{
 	prepare_since,
 };
 pub(crate) use display::format_timestamp;
+pub(crate) use migration::{
+	MigrationPreparation, TelemetryRecovery, ensure_migration_idle,
+	prepare_migration_at, recreate_migration_at,
+};
 pub(crate) use recording::{
 	CatalogueUse, Command, CommandOutcome, InvocationId, Operation, Recorder,
 };
@@ -33,16 +38,19 @@ pub(super) struct Paths {
 }
 
 impl Paths {
-	fn discover() -> Result<Self, Error> {
-		let directories = app_files::directories().ok_or_else(|| {
-			Error::new("Could not resolve the local telemetry directory.")
-		})?;
-		let data_directory = directories.data_local_dir();
-		Ok(Self {
+	fn at(data_directory: PathBuf) -> Self {
+		Self {
 			data: data_directory.join("telemetry.sqlite"),
 			lock: data_directory.join("telemetry.lock"),
-			disabled: directories.config_dir().join("telemetry-disabled"),
-		})
+			disabled: data_directory.join("telemetry-disabled"),
+		}
+	}
+
+	fn discover() -> Result<Self, Error> {
+		let data_directory = app_files::data_directory().ok_or_else(|| {
+			Error::new("Could not resolve the local telemetry directory.")
+		})?;
+		Ok(Self::at(data_directory))
 	}
 }
 

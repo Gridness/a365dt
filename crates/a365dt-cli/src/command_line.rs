@@ -7,8 +7,8 @@ use crate::search::typo_budget;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnerRoute {
 	Purge,
+	Stateless,
 	TelemetryControl,
-	TelemetryOnly,
 	CachePruneAndTelemetry,
 	CacheAndTelemetry,
 }
@@ -17,7 +17,7 @@ pub fn owner_route(args: &Args) -> OwnerRoute {
 	match args.command {
 		Some(Commands::Purge { .. }) => OwnerRoute::Purge,
 		Some(Commands::Telemetry { .. }) => OwnerRoute::TelemetryControl,
-		Some(Commands::Completions { .. }) => OwnerRoute::TelemetryOnly,
+		Some(Commands::Completions { .. }) => OwnerRoute::Stateless,
 		Some(Commands::Cache {
 			command: CacheCommand::Prune { .. },
 		}) => OwnerRoute::CachePruneAndTelemetry,

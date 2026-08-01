@@ -8,8 +8,9 @@ use std::{
 use sqlx::{SqlitePool, migrate::Migrator};
 
 use crate::{
+	app_files,
 	error::Error,
-	sqlite::{self, Durability, MigrationError, OpenMode},
+	sqlite::{self, Durability, FailureContext, MigrationError, OpenMode},
 };
 
 pub(super) const FILE: &str = "cache.sqlite";
@@ -37,12 +38,6 @@ impl Drop for FileLock {
 		// Forked children can keep a duplicated descriptor open after this one closes.
 		let _ = self.0.unlock();
 	}
-}
-
-#[derive(Clone, Copy)]
-enum FailureContext {
-	Opening,
-	Schema,
 }
 
 pub(super) async fn open(directory: &Path) -> Result<Database, OpenFailure> {
@@ -146,6 +141,17 @@ async fn open_database(
 		drop(cache_lock);
 		return Err(failure);
 	}
+	if let Err(error) = app_files::private_file(&path) {
+		pool.close().await;
+		drop(cache_lock);
+		return Err(OpenFailure {
+			error: Error::with_debug(
+				"Could not secure the local cache database.",
+				error,
+			),
+			rebuildable: false,
+		});
+	}
 	Ok(Database {
 		pool,
 		_lock: cache_lock,
@@ -235,30 +241,13 @@ fn open_failure(
 	error: sqlx::Error,
 	context: FailureContext,
 ) -> OpenFailure {
-	let code = match &error {
-		sqlx::Error::Database(error) => error
-			.code()
-			.and_then(|code| code.parse::<i32>().ok())
-			.map(primary_result_code),
-		sqlx::Error::Io(_) | _ => None,
-	};
 	OpenFailure {
 		error: Error::with_debug(
 			"Could not open the local cache; run `a365dt cache prune` to inspect or reset it.",
 			format!("{}: {error}", path.display()),
 		),
-		rebuildable: is_structural(code, context),
+		rebuildable: sqlite::is_structural(&error, context),
 	}
-}
-
-fn primary_result_code(code: i32) -> i32 {
-	code & 0xff
-}
-
-fn is_structural(code: Option<i32>, context: FailureContext) -> bool {
-	matches!(code, Some(11 | 26))
-		|| (matches!(context, FailureContext::Schema)
-			&& matches!(code, Some(1 | 17 | 19 | 20 | 24)))
 }
 
 fn schema_failure(path: &Path, detail: impl std::fmt::Display) -> OpenFailure {

@@ -4,6 +4,10 @@ a365dt downloads user-selected Anime365 releases while keeping episode and trans
 
 ## Language
 
+**Application home**:
+The build-specific, user-scoped directory that owns a365dt's local cache and telemetry state: `~/.a365dt` for release builds and `~/.a365dt-dev` for development builds. Cache files live under `cache/` and telemetry files under `data/`; downloaded media and OS-managed credentials are outside it.
+_Avoid_: OS application directory, data directory
+
 **Interactive session**:
 An a365dt run in which a person searches for a Series and makes download choices. Help, version reporting, shell-completion generation, and maintenance commands are not Interactive sessions.
 _Avoid_: Launch, invocation

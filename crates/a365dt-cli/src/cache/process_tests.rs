@@ -12,7 +12,10 @@ use super::{
 	Catalogue, CompletedRelease, RebuildPermission, Release, ReleaseState,
 	Store, storage::prune_at,
 };
-use crate::{api::Series, telemetry::Recorder};
+use crate::{
+	api::Series,
+	telemetry::{Recorder, ensure_migration_idle},
+};
 
 const FIRST_OPEN_WORKER: &str =
 	"cache::process_tests::worker_concurrent_first_open";
@@ -30,6 +33,8 @@ const TELEMETRY_STATE_WORKER: &str =
 	"telemetry::process_tests::worker_state_batches";
 const TELEMETRY_CONTROL_WORKER: &str =
 	"telemetry::process_tests::worker_state_control";
+const TELEMETRY_MIGRATION_WORKER: &str =
+	"telemetry::process_tests::worker_migration_open";
 
 #[tokio::test]
 async fn sqlite_process_safety() {
@@ -38,6 +43,7 @@ async fn sqlite_process_safety() {
 	lifecycle_rebuild().await;
 	telemetry_writer_drain();
 	telemetry_state_rechecks();
+	telemetry_migration_lock();
 }
 
 async fn concurrent_first_open() {
@@ -356,6 +362,37 @@ fn telemetry_state_rechecks() {
 	control.send("FINISH");
 	batches.finish();
 	control.finish();
+	fs::remove_dir_all(directory).unwrap();
+}
+
+fn telemetry_migration_lock() {
+	let directory = temporary_directory("telemetry-migration-lock");
+	fs::create_dir_all(&directory).unwrap();
+	let mut worker = Worker::spawn(TELEMETRY_CONTROL_WORKER, &directory);
+	worker.wait_for("READY");
+	let error = match ensure_migration_idle(&directory.join("telemetry.sqlite"))
+	{
+		Err(error) => error,
+		Ok(_) => panic!("expected active telemetry to block migration"),
+	};
+	assert_eq!(
+		error.to_string(),
+		"Legacy application state is in use; close other a365dt processes and retry."
+	);
+	worker.send("FINISH");
+	worker.finish();
+	let shared_memory = directory.join("telemetry.sqlite-shm");
+	assert!(!shared_memory.exists());
+	let migration_lock =
+		ensure_migration_idle(&directory.join("telemetry.sqlite"))
+			.unwrap()
+			.unwrap();
+	let mut worker = Worker::spawn(TELEMETRY_MIGRATION_WORKER, &directory);
+	worker.wait_for("BLOCKED");
+	worker.finish();
+	fs::remove_file(&shared_memory).unwrap();
+	migration_lock.close().unwrap();
+	assert!(!shared_memory.exists());
 	fs::remove_dir_all(directory).unwrap();
 }
 

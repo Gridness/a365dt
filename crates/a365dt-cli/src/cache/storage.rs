@@ -71,6 +71,12 @@ pub(crate) enum RebuildPermission {
 	Preauthorized,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum MigrationPreparation {
+	Ready,
+	Rebuilt,
+}
+
 impl CompletedRelease {
 	pub(crate) fn now(release: Release) -> Self {
 		Self {
@@ -171,6 +177,22 @@ pub(crate) async fn prune(permission: RebuildPermission) -> Result<(), Error> {
 		return Ok(());
 	};
 	prune_at(&directory, permission).await
+}
+
+pub(crate) async fn prepare_migration_at(
+	directory: &Path,
+) -> Result<MigrationPreparation, Error> {
+	match database::open(directory).await {
+		Ok(database) => {
+			database.pool.close().await;
+			Ok(MigrationPreparation::Ready)
+		}
+		Err(failure) if failure.rebuildable => {
+			database::rebuild(directory).await?;
+			Ok(MigrationPreparation::Rebuilt)
+		}
+		Err(failure) => Err(failure.error),
+	}
 }
 
 pub(super) async fn prune_at(

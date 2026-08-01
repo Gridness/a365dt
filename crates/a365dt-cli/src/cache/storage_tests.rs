@@ -3,8 +3,8 @@ use std::{fs, process, time::SystemTime};
 use pretty_assertions::assert_eq;
 
 use super::{
-	CompletedRelease, Inspection, RebuildPermission, Release, ReleaseState,
-	Store, prune_at,
+	CompletedRelease, Inspection, MigrationPreparation, RebuildPermission,
+	Release, ReleaseState, Store, prepare_migration_at, prune_at,
 };
 use crate::{
 	api::{Episode, Series},
@@ -280,9 +280,10 @@ async fn damaged_storage_requires_authorization_before_rebuild() {
 	assert!(error.to_string().contains("cache prune --yes"));
 	assert_eq!(fs::read(&path).unwrap(), b"damaged");
 
-	prune_at(&directory, RebuildPermission::Preauthorized)
-		.await
-		.unwrap();
+	assert_eq!(
+		prepare_migration_at(&directory).await.unwrap(),
+		MigrationPreparation::Rebuilt,
+	);
 	let store = Store::at(directory.clone()).await;
 	assert!(matches!(
 		store.inspect().await,

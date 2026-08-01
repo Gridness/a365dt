@@ -116,6 +116,13 @@ is available.
 `purge` removes a365dt cache, configuration, local data, and the saved macOS
 Keychain token. It does not remove downloaded media or the installed program.
 
+a365dt keeps release application files under `~/.a365dt`, with cache files in
+`cache/` and local telemetry in `data/`. Development builds use
+`~/.a365dt-dev` instead. When upgrading from an older version, an interactive
+prompt moves existing files from the former OS-specific locations before a
+stateful command runs; `purge`, completion generation, help, and version output
+do not require migration.
+
 Local telemetry is enabled by default and records aggregate command,
 catalogue, and download outcomes without titles, queries, identifiers, URLs,
 paths, or tokens. It is never transmitted. Use `a365dt telemetry show` to
