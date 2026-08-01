@@ -10,7 +10,7 @@ use console::style;
 use indicatif::{
 	MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
 };
-use tokio::{fs, sync::watch, task::JoinSet};
+use tokio::{sync::watch, task::JoinSet};
 
 mod acquisition;
 mod mux;
@@ -18,6 +18,7 @@ mod mux;
 use crate::{
 	api::{Anime365, Episode},
 	error::Error,
+	preferences::MuxFormat,
 	select::PlannedRelease,
 };
 use acquisition::{
@@ -28,7 +29,20 @@ use acquisition::{
 pub struct Job {
 	pub release: PlannedRelease,
 	pub directory: PathBuf,
-	pub mux: bool,
+	pub mux: Mux,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mux {
+	Disabled,
+	Enabled(MuxFormat),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Files {
+	video: PathBuf,
+	subtitle: PathBuf,
+	output: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,7 +74,7 @@ struct Bars {
 }
 
 impl Job {
-	pub fn new(release: PlannedRelease, directory: PathBuf, mux: bool) -> Self {
+	pub fn new(release: PlannedRelease, directory: PathBuf, mux: Mux) -> Self {
 		Self {
 			release,
 			directory,
@@ -77,6 +91,38 @@ impl Job {
 			sanitize(&self.release.translation.authors_summary, 64),
 			self.release.height
 		)
+	}
+
+	fn files(&self) -> Files {
+		let stem = self.stem();
+		let path =
+			|extension| self.directory.join(format!("{stem}.{extension}"));
+		let format = self.planned_mux_format();
+		Files {
+			video: path(if format == Some(MuxFormat::Mp4) {
+				"video.mp4"
+			} else {
+				"mp4"
+			}),
+			subtitle: path("ass"),
+			output: path(if format == Some(MuxFormat::Mkv) {
+				"mkv"
+			} else {
+				"mp4"
+			}),
+		}
+	}
+
+	fn mux_format(&self) -> Option<MuxFormat> {
+		match self.mux {
+			Mux::Enabled(format) => Some(format),
+			Mux::Disabled => None,
+		}
+	}
+
+	fn planned_mux_format(&self) -> Option<MuxFormat> {
+		self.release.subtitle_url.as_ref()?;
+		self.mux_format()
 	}
 }
 
@@ -185,20 +231,34 @@ async fn download_job<A: Adapter>(
 	mut cancel: watch::Receiver<bool>,
 ) -> Outcome {
 	let episode = job.release.episode.episode_full.clone();
-	let stem = job.stem();
-	let video = job.directory.join(format!("{stem}.mp4"));
-	let subtitle = job.directory.join(format!("{stem}.ass"));
-	let mkv = job.directory.join(format!("{stem}.mkv"));
-	if job.mux && mkv.exists() {
-		let _ = fs::remove_file(&video).await;
-		let _ = fs::remove_file(&subtitle).await;
-		let _ = fs::remove_file(mkv.with_extension("part.mkv")).await;
-		return Outcome {
-			episode,
-			status: Status::Skipped,
-			bytes: file_len(&mkv).await,
-			detail: "MKV already exists.".into(),
-		};
+	let Files {
+		video,
+		subtitle,
+		output,
+	} = job.files();
+	let mux = job.mux_format();
+	let planned_mux = job.planned_mux_format();
+	if let Some(format) = planned_mux {
+		match mux::reconcile(format, &video, &subtitle, &output).await {
+			Ok(true) => {
+				return Outcome {
+					episode,
+					status: Status::Skipped,
+					bytes: file_len(&output).await,
+					detail: format!("{} already exists.", output.display())
+						.into(),
+				};
+			}
+			Ok(false) => {}
+			Err(error) => {
+				return Outcome {
+					episode,
+					status: Status::Failed,
+					bytes: file_len(&output).await,
+					detail: error,
+				};
+			}
+		}
 	}
 	let bar =
 		bars.transfer_bar(&format!("{episode} • {}p", job.release.height));
@@ -247,9 +307,21 @@ async fn download_job<A: Adapter>(
 	let bytes = acquisition.bytes;
 	let has_subtitle_asset = acquisition.has_subtitle_asset;
 	bar.finish_and_clear();
-	if job.mux && has_subtitle_asset {
+	if let (Some(format), true) = (mux, has_subtitle_asset) {
+		let output = mux::output_path(format, &output);
+		let video = match mux::prepare_source(format, &video, &output).await {
+			Ok(video) => video,
+			Err(error) => {
+				return Outcome {
+					episode,
+					status: Status::MuxFailed,
+					bytes,
+					detail: error,
+				};
+			}
+		};
 		let mux_bar = bars.spinner(&format!("{episode} • muxing"));
-		let result = mux::run(&video, &subtitle, &mkv).await;
+		let result = mux::run(format, &video, &subtitle, &output).await;
 		mux_bar.finish_and_clear();
 		if let Err(error) = result {
 			return Outcome {
@@ -263,9 +335,26 @@ async fn download_job<A: Adapter>(
 			episode,
 			status: Status::Downloaded,
 			bytes,
-			detail: format!("{}", mkv.display()).into(),
+			detail: format!("{}", output.display()).into(),
 		};
 	}
+	let final_path = match mux::finish_without_subtitle(
+		planned_mux,
+		&video,
+		&output,
+	)
+	.await
+	{
+		Ok(path) => path,
+		Err(error) => {
+			return Outcome {
+				episode,
+				status: Status::Failed,
+				bytes,
+				detail: error,
+			};
+		}
+	};
 	Outcome {
 		episode,
 		status: if video_skipped {
@@ -274,7 +363,7 @@ async fn download_job<A: Adapter>(
 			Status::Downloaded
 		},
 		bytes,
-		detail: format!("{}", video.display()).into(),
+		detail: format!("{}", final_path.display()).into(),
 	}
 }
 

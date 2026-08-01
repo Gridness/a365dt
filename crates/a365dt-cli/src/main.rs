@@ -78,12 +78,16 @@ struct Args {
 	#[arg(short, long)]
 	jobs: Option<NonZeroUsize>,
 
-	/// Mux separate ASS subtitles into MKV without confirmation.
+	/// Mux separate ASS subtitles without confirmation.
 	#[arg(
 		long,
 		visible_aliases = ["burn-subtitles", "as-single-file"]
 	)]
 	mux: bool,
+
+	/// Mux separate ASS subtitles into this container without confirmation.
+	#[arg(long, value_name = "FORMAT")]
+	mux_format: Option<preferences::MuxFormat>,
 
 	/// Show technical error details.
 	#[arg(long, global = true)]
@@ -531,6 +535,7 @@ async fn run(
 		output: args.output.clone(),
 		jobs: args.jobs,
 		mux: args.mux,
+		format: args.mux_format,
 	})?;
 	preferences::warn_if_high_concurrency(&preferences);
 	startup::show(store).await;
@@ -576,7 +581,10 @@ async fn run(
 	let mux = if separate_subtitles > 0 && ffmpeg_available().await {
 		preferences.mux
 			|| ui::confirm(
-				"Mux separate ASS subtitles into MKV after download?",
+				&format!(
+					"Mux separate ASS subtitles into {} after download?",
+					preferences.format
+				),
 				false,
 			)?
 	} else {
@@ -586,6 +594,11 @@ async fn run(
 			);
 		}
 		false
+	};
+	let mux = if mux {
+		download::Mux::Enabled(preferences.format)
+	} else {
+		download::Mux::Disabled
 	};
 
 	let output = preference_store.prepare_output(&preferences.output)?;

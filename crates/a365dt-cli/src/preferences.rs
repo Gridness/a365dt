@@ -1,4 +1,5 @@
 use std::{
+	fmt,
 	fs::{self, File},
 	io::Write,
 	num::NonZeroUsize,
@@ -23,6 +24,7 @@ pub(crate) struct Preferences {
 	pub output: PathBuf,
 	pub jobs: NonZeroUsize,
 	pub mux: bool,
+	pub format: MuxFormat,
 }
 
 #[derive(Default)]
@@ -30,6 +32,34 @@ pub(crate) struct Overrides {
 	pub output: Option<PathBuf>,
 	pub jobs: Option<NonZeroUsize>,
 	pub mux: bool,
+	pub format: Option<MuxFormat>,
+}
+
+#[derive(
+	Clone,
+	Copy,
+	Debug,
+	Default,
+	Deserialize,
+	Eq,
+	PartialEq,
+	Serialize,
+	clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum MuxFormat {
+	#[default]
+	Mp4,
+	Mkv,
+}
+
+impl fmt::Display for MuxFormat {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter.write_str(match self {
+			Self::Mp4 => "MP4",
+			Self::Mkv => "MKV",
+		})
+	}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +74,7 @@ struct Sources {
 	output: Source,
 	jobs: Source,
 	mux: Source,
+	format: Source,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -72,6 +103,7 @@ struct FilePreferences {
 	output: Option<String>,
 	jobs: Option<NonZeroUsize>,
 	mux: Option<bool>,
+	mux_format: Option<MuxFormat>,
 }
 
 enum FileState {
@@ -199,19 +231,31 @@ impl Store {
 				(NonZeroUsize::new(DEFAULT_JOBS).unwrap(), Source::BuiltIn)
 			}
 		};
-		let (mux, mux_source) = if overrides.mux {
+		let (mux, mux_source) = if overrides.mux || overrides.format.is_some() {
 			(true, Source::CommandLine)
 		} else if let Some(mux) = file.mux {
 			(mux, Source::Config)
 		} else {
 			(false, Source::BuiltIn)
 		};
+		let (format, format_source) = match (overrides.format, file.mux_format)
+		{
+			(Some(format), _) => (format, Source::CommandLine),
+			(None, Some(format)) => (format, Source::Config),
+			(None, None) => (MuxFormat::default(), Source::BuiltIn),
+		};
 		Ok(Snapshot {
-			preferences: Preferences { output, jobs, mux },
+			preferences: Preferences {
+				output,
+				jobs,
+				mux,
+				format,
+			},
 			sources: Sources {
 				output: output_source,
 				jobs: jobs_source,
 				mux: mux_source,
+				format: format_source,
 			},
 		})
 	}
@@ -248,6 +292,7 @@ impl Store {
 			output: Some(output.to_owned()),
 			jobs: Some(preferences.jobs),
 			mux: Some(preferences.mux),
+			mux_format: Some(preferences.format),
 		})
 		.map_err(|error| {
 			Error::with_debug("Could not encode Download preferences.", error)

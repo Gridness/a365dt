@@ -3,6 +3,7 @@ use std::sync::Arc;
 use pretty_assertions::assert_eq as assert_deep_eq;
 
 use super::*;
+use crate::preferences::MuxFormat;
 
 async fn acquire_subtitle_and_observe(
 	directory: &TestDirectory,
@@ -156,7 +157,7 @@ async fn download_batch_continues_after_episode_acquisition_failure() {
 	let mut second = release();
 	second.episode.episode_int = "2".into();
 	second.episode.episode_full = "2 серия".into();
-	let mux = false;
+	let mux = Mux::Disabled;
 	let jobs = vec![
 		Job::new(release(), directory.0.clone(), mux),
 		Job::new(second, directory.0.clone(), mux),
@@ -182,5 +183,106 @@ async fn download_batch_continues_after_episode_acquisition_failure() {
 			outcome("1 серия", Status::Failed, 0, failed.into()),
 			outcome("2 серия", Status::Downloaded, 4, completed.into()),
 		]
+	);
+}
+
+#[tokio::test]
+async fn mp4_mux_preserves_existing_separate_files_on_failure() {
+	let directory = TestDirectory::new();
+	let mut release = release();
+	release.subtitle_url = Some(SUBTITLE_URL.into());
+	let stem = "E01 [voice-ru] [Test] [1080p]";
+	tokio::fs::write(directory.path(&format!("{stem}.video.mp4")), b"raw!")
+		.await
+		.unwrap();
+	let adapter = Arc::new(ScriptedAdapter::new([
+		known_response(4, []),
+		known_response(3, []),
+		known_response(3, [b"ass".as_slice()]),
+	]));
+	let (_cancel_tx, cancel) = watch::channel(false);
+	let summary = run_with_adapter(
+		Arc::clone(&adapter),
+		vec![Job::new(
+			release,
+			directory.0.clone(),
+			Mux::Enabled(MuxFormat::Mp4),
+		)],
+		1,
+		Arc::new(Bars::new(1, false)),
+		cancel,
+	)
+	.await;
+	let files = observe(&directory.0, downloaded(0), &adapter).await.files;
+	let outcomes = summary
+		.outcomes
+		.into_iter()
+		.map(|outcome| (outcome.episode, outcome.status, outcome.bytes))
+		.collect::<Vec<_>>();
+
+	assert_deep_eq!(
+		(outcomes, adapter.requests(), files),
+		(
+			vec![("1 серия".into(), Status::MuxFailed, 4)],
+			vec![
+				ObservedRequest::Head(URL.into()),
+				ObservedRequest::Head(SUBTITLE_URL.into()),
+				ObservedRequest::Get(SUBTITLE_URL.into()),
+			],
+			vec![
+				(format!("{stem}.ass"), b"ass".to_vec()),
+				(format!("{stem}.video.mp4"), b"raw!".to_vec()),
+			],
+		)
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn mp4_mux_uses_subtitle_discovered_during_video_retry() {
+	let directory = TestDirectory::new();
+	let adapter = Arc::new(
+		ScriptedAdapter::new([
+			known_response(4, []),
+			known_response(4, []),
+			known_response(4, []),
+			known_response(4, [b"raw!".as_slice()]),
+			known_response(3, []),
+			known_response(3, [b"ass".as_slice()]),
+		])
+		.with_refreshes([Ok(Embed {
+			download: vec![MediaOption {
+				height: 1080,
+				url: Some(URL.into()),
+			}],
+			subtitles_url: Some(SUBTITLE_URL.into()),
+		})]),
+	);
+	let (_cancel_tx, cancel) = watch::channel(false);
+	let summary = run_with_adapter(
+		Arc::clone(&adapter),
+		vec![Job::new(
+			release(),
+			directory.0.clone(),
+			Mux::Enabled(MuxFormat::Mp4),
+		)],
+		1,
+		Arc::new(Bars::new(1, false)),
+		cancel,
+	)
+	.await;
+	let files = observe(&directory.0, downloaded(0), &adapter).await.files;
+
+	assert_deep_eq!(
+		(summary.outcomes[0].status, files),
+		(
+			Status::MuxFailed,
+			vec![
+				("E01 [voice-ru] [Test] [1080p].ass".into(), b"ass".to_vec()),
+				(
+					"E01 [voice-ru] [Test] [1080p].video.mp4".into(),
+					b"raw!".to_vec(),
+				),
+			],
+		)
 	);
 }

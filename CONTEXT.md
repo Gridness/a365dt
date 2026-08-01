@@ -9,7 +9,7 @@ The build-specific, user-scoped directory that owns a365dt's Download preference
 _Avoid_: OS application directory, data directory
 
 **Download preferences**:
-User-defined defaults for the output directory, concurrent download count, and whether to mux subtitles without confirmation. Any omitted preference inherits its built-in default; `a365dt config` edits all effective values interactively, `config show` displays them, and `config reset` restores built-in defaults. They are stored in the Application home's `config.toml`; explicit Invocation choices take precedence when present, and disabling automatic muxing preserves the existing prompt.
+User-defined defaults for the output directory, concurrent download count, whether to mux subtitles without confirmation, and the Mux container. Any omitted preference inherits its built-in default; `a365dt config` edits all effective values interactively, `config show` displays them, and `config reset` restores built-in defaults. They are stored in the Application home's `config.toml`; explicit Invocation choices take precedence when present, and disabling automatic muxing preserves the existing prompt.
 _Avoid_: Settings, options
 
 **Interactive session**:
@@ -95,3 +95,7 @@ _Avoid_: Existing file, finished transfer
 **Muxed download**:
 A Verified download whose separate video and Subtitle asset are packaged in one container without rendering the subtitles into the video.
 _Avoid_: Burned-in subtitles, re-encoded video
+
+**Mux container**:
+The container chosen for a Muxed download. MP4 favors playback compatibility while simplifying styled Subtitle assets; MKV preserves their styling.
+_Avoid_: Output format, file format
