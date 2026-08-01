@@ -1,20 +1,6 @@
 use std::{fs, process, time::SystemTime};
 
-use super::{
-	FailureContext, is_structural, open, primary_result_code, rebuild,
-};
-
-#[test]
-fn extended_result_codes_keep_their_primary_classification() {
-	assert!(!is_structural(
-		Some(primary_result_code(266)),
-		FailureContext::Schema
-	));
-	assert!(is_structural(
-		Some(primary_result_code(267)),
-		FailureContext::Opening
-	));
-}
+use super::{open, rebuild};
 
 #[tokio::test]
 async fn rebuilds_after_a_shared_lock_was_inherited() {

@@ -28,9 +28,35 @@ pub(crate) enum OpenMode {
 	Initialize,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FailureContext {
+	Opening,
+	Schema,
+}
+
 pub(crate) enum MigrationError {
 	Database(sqlx::Error),
 	Invalid(String),
+}
+
+pub(crate) fn is_structural(
+	error: &sqlx::Error,
+	context: FailureContext,
+) -> bool {
+	let code = result_code(error);
+	matches!(code, Some(11 | 26))
+		|| (matches!(context, FailureContext::Schema)
+			&& matches!(code, Some(1 | 17 | 19 | 20 | 24)))
+}
+
+fn result_code(error: &sqlx::Error) -> Option<i32> {
+	match error {
+		sqlx::Error::Database(error) => error
+			.code()
+			.and_then(|code| code.parse::<i32>().ok())
+			.map(|code| code & 0xff),
+		sqlx::Error::Io(_) | _ => None,
+	}
 }
 
 pub(crate) async fn connect(

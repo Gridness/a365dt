@@ -232,10 +232,7 @@ fn routes_commands_to_only_their_required_owners() {
 			&["a365dt", "telemetry", "show"][..],
 			OwnerRoute::TelemetryControl,
 		),
-		(
-			&["a365dt", "completions", "zsh"][..],
-			OwnerRoute::TelemetryOnly,
-		),
+		(&["a365dt", "completions", "zsh"][..], OwnerRoute::Stateless),
 		(
 			&["a365dt", "cache", "prune", "--yes"][..],
 			OwnerRoute::CachePruneAndTelemetry,

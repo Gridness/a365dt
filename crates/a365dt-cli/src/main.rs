@@ -259,6 +259,20 @@ async fn main() -> ExitCode {
 			}
 		};
 	}
+	if owner_route == OwnerRoute::Stateless {
+		let Some(Commands::Completions { arguments }) = args.command.as_ref()
+		else {
+			unreachable!("the stateless route generates completions")
+		};
+		generate(
+			completion_shell(arguments)
+				.expect("invalid completion shells return to title search"),
+			&mut Args::command(),
+			"a365dt",
+			&mut std::io::stdout(),
+		);
+		return ExitCode::SUCCESS;
+	}
 	if owner_route == OwnerRoute::TelemetryControl {
 		let Some(Commands::Telemetry { command }) = args.command.as_ref()
 		else {
@@ -299,21 +313,6 @@ async fn main() -> ExitCode {
 		}
 	}));
 	let result = match owner_route {
-		OwnerRoute::TelemetryOnly => {
-			let Some(Commands::Completions { arguments }) =
-				args.command.as_ref()
-			else {
-				unreachable!("the Telemetry-only route generates completions")
-			};
-			generate(
-				completion_shell(arguments)
-					.expect("invalid completion shells return to title search"),
-				&mut Args::command(),
-				"a365dt",
-				&mut std::io::stdout(),
-			);
-			Ok(ExitCode::SUCCESS)
-		}
 		OwnerRoute::CachePruneAndTelemetry => {
 			let Some(Commands::Cache {
 				command: CacheCommand::Prune { yes, .. },
@@ -356,7 +355,9 @@ async fn main() -> ExitCode {
 			store.close().await;
 			result
 		}
-		OwnerRoute::Purge | OwnerRoute::TelemetryControl => {
+		OwnerRoute::Purge
+		| OwnerRoute::Stateless
+		| OwnerRoute::TelemetryControl => {
 			unreachable!("early-return routes do not open ordinary owners")
 		}
 	};
@@ -435,7 +436,9 @@ fn telemetry_command(args: &Args) -> telemetry::Command {
 		Some(Commands::Cache {
 			command: CacheCommand::Query(_),
 		}) => unreachable!("cache queries return to title search"),
-		Some(Commands::Completions { .. }) => telemetry::Command::Completions,
+		Some(Commands::Completions { .. }) => {
+			unreachable!("completion generation returns before telemetry")
+		}
 		Some(Commands::Doctor { .. }) => telemetry::Command::Doctor,
 		Some(Commands::Purge { .. }) => {
 			unreachable!("purge returns before recording")
