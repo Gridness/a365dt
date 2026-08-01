@@ -4,13 +4,12 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use clap::{Subcommand, ValueEnum};
+use clap::Subcommand;
 
 use crate::{error::Error, ui};
 
 use super::{
-	FilePreferences, Inspection, MuxFormat, Overrides, Preferences, Source,
-	Store,
+	FilePreferences, Inspection, Overrides, Preferences, Source, Store,
 };
 
 #[derive(Clone, Copy)]
@@ -99,13 +98,7 @@ impl Store {
 				ConfirmDefault::No
 			},
 		)?;
-		let format = prompt_format(current.format)?;
-		self.save(&Preferences {
-			output,
-			jobs,
-			mux,
-			format,
-		})?;
+		self.save(&Preferences { output, jobs, mux })?;
 		ui::success(format!("Saved {}", self.file().display()));
 		Ok(())
 	}
@@ -141,11 +134,6 @@ impl Store {
 				}
 				.into(),
 				snapshot.sources.mux.label().into(),
-			],
-			[
-				"Mux format".into(),
-				snapshot.preferences.format.to_string(),
-				snapshot.sources.format.label().into(),
 			],
 		]);
 		Ok(())
@@ -246,21 +234,6 @@ fn prompt_jobs(current: NonZeroUsize) -> Result<NonZeroUsize, Error> {
 		match input.parse() {
 			Ok(jobs) => return Ok(jobs),
 			Err(_) => ui::warning("Enter a positive whole number."),
-		}
-	}
-}
-
-fn prompt_format(current: MuxFormat) -> Result<MuxFormat, Error> {
-	loop {
-		let input = ui::prompt(&format!(
-			"Mux format [{current}] (mp4/mkv, Enter to keep):"
-		))?;
-		if input.is_empty() {
-			return Ok(current);
-		}
-		match MuxFormat::from_str(&input, true) {
-			Ok(format) => return Ok(format),
-			Err(_) => ui::warning("Enter mp4 or mkv."),
 		}
 	}
 }
