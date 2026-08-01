@@ -78,17 +78,11 @@ fn infers_managed_installation_channels_from_paths() {
 	assert_eq!(
 		[
 			channel("/opt/homebrew/Cellar/a365dt/0.7.0/bin/a365dt"),
-			channel(concat!(
-				r"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages",
-				r"\Gridness.a365dt_Microsoft.Winget.Source_8wekyb3d8bbwe",
-				r"\a365dt.exe"
-			)),
 			channel("/Users/me/.cargo/bin/a365dt"),
 			channel("/usr/local/bin/a365dt"),
 		],
 		[
 			InstallationChannel::Homebrew,
-			InstallationChannel::WinGet,
 			InstallationChannel::Cargo,
 			InstallationChannel::Manual,
 		]

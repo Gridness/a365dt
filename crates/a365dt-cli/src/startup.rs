@@ -177,21 +177,13 @@ fn upgrade_instruction(
 		InstallationChannel::Homebrew => {
 			"brew upgrade Gridness/oosama/a365dt".to_owned()
 		}
-		InstallationChannel::WinGet => {
-			"winget upgrade --id Gridness.a365dt --exact".to_owned()
-		}
 		InstallationChannel::Cargo => concat!(
 			"cargo install --git https://github.com/Gridness/a365dt ",
 			"--bin a365dt"
 		)
 		.to_owned(),
 		InstallationChannel::Manual => {
-			let executable = if cfg!(windows) {
-				"a365dt.exe"
-			} else {
-				"a365dt"
-			};
-			format!("Download {release_url} and replace {executable}.")
+			format!("Download {release_url} and replace a365dt.")
 		}
 	}
 }
@@ -210,18 +202,16 @@ fn installation_channel_from_path(
 	let executable = executable
 		.canonicalize()
 		.unwrap_or_else(|_| executable.into());
-	let executable = normalized_path(&executable);
-	if executable.contains("/cellar/a365dt/") {
+	if executable
+		.ancestors()
+		.any(|ancestor| ancestor.ends_with("Cellar/a365dt"))
+	{
 		return InstallationChannel::Homebrew;
 	}
-	if executable.contains("/microsoft/winget/packages/gridness.a365dt_") {
-		return InstallationChannel::WinGet;
-	}
-	let parent = executable.rsplit_once('/').map(|(parent, _)| parent);
+	let parent = executable.parent();
 	if cargo_bin_directories
 		.iter()
-		.map(|directory| normalized_path(directory))
-		.any(|directory| Some(directory.trim_end_matches('/')) == parent)
+		.any(|directory| Some(directory.as_path()) == parent)
 	{
 		return InstallationChannel::Cargo;
 	}
@@ -233,21 +223,12 @@ fn cargo_bin_directories() -> Vec<PathBuf> {
 	if let Some(cargo_home) = std::env::var_os("CARGO_HOME") {
 		directories.push(PathBuf::from(cargo_home).join("bin"));
 	}
-	for home in ["HOME", "USERPROFILE"]
-		.into_iter()
-		.filter_map(std::env::var_os)
-	{
+	if let Some(home) = std::env::var_os("HOME") {
 		directories.push(PathBuf::from(home).join(".cargo").join("bin"));
 	}
 	directories.sort_unstable();
 	directories.dedup();
 	directories
-}
-
-fn normalized_path(path: &Path) -> String {
-	path.to_string_lossy()
-		.replace('\\', "/")
-		.to_ascii_lowercase()
 }
 
 fn random_tip() -> Option<&'static str> {
@@ -361,7 +342,6 @@ pub struct Update {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InstallationChannel {
 	Homebrew,
-	WinGet,
 	Cargo,
 	Manual,
 }

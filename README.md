@@ -29,7 +29,7 @@ brew install Gridness/oosama/a365dt --with-ffmpeg-full
 
 ### Release binary or Cargo
 
-Download a binary for Linux, macOS, or Windows from the
+Download a binary for Linux or macOS from the
 [latest release](https://github.com/Gridness/a365dt/releases/latest), or
 install from source with Rust:
 

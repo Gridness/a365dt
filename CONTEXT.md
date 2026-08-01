@@ -29,7 +29,7 @@ An immutable, timestamped local observation of a365dt usage or performance. It m
 _Avoid_: Counter, metric snapshot
 
 **Installation channel**:
-The distribution route through which the running a365dt executable was installed: Homebrew, WinGet, Cargo, or manual when no managed route can be identified.
+The distribution route through which the running a365dt executable was installed: Homebrew, Cargo, or manual when no managed route can be identified.
 _Avoid_: Installation type, package manager
 
 **Series**:
