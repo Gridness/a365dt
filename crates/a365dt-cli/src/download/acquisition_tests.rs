@@ -15,7 +15,7 @@ use reqwest::{
 };
 use tokio::{sync::watch, time::Instant};
 
-use super::super::{Bars, Job, Mux, Outcome, Status, run_with_adapter};
+use super::super::{Bars, Job, Outcome, Status, run_with_adapter};
 use super::adapter::{Adapter, Request, Response};
 use super::{Acquisition, AcquisitionStatus, TransferError, acquire};
 use crate::{

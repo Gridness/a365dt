@@ -21,7 +21,7 @@ The Homebrew package supports Apple Silicon macOS and ARM64 or x86-64 Linux:
 brew install Gridness/oosama/a365dt
 ```
 
-Install the optional `ffmpeg-full` dependency to mux separate subtitles:
+Install the optional `ffmpeg-full` dependency to mux subtitles into MKV files:
 
 ```console
 brew install Gridness/oosama/a365dt --with-ffmpeg-full
@@ -38,7 +38,7 @@ cargo install --git https://github.com/Gridness/a365dt --bin a365dt
 ```
 
 [FFmpeg](https://ffmpeg.org/) is optional. When it is available, `a365dt` can
-mux separate ASS subtitles into MP4 or MKV files.
+mux separate ASS subtitles into MKV files.
 
 ## macOS
 
@@ -104,15 +104,12 @@ The same preferences can be edited directly in `~/.a365dt/config.toml`:
 output = "~/Videos"
 jobs = 8
 mux = true
-mux_format = "mp4"
 ```
 
 Every key is optional. Explicit command-line options override the file;
-`mux = false` keeps the existing mux confirmation, and `mux_format` accepts
-`mp4` or `mkv` with `mp4` as its built-in default. `--mux-format mp4|mkv`
-selects the format and muxes without confirmation; `--mux` uses the configured
-format. Output paths must be absolute or start with `~/`, and values above 10
-jobs warn about possible rate limits without preventing the download.
+`mux = false` keeps the existing mux confirmation. Output paths must be
+absolute or start with `~/`, and values above 10 jobs warn about possible rate
+limits without preventing the download.
 
 On first use, `a365dt` opens Anime365 so you can obtain an access token. For
 non-interactive use, provide it through `ANIME365_ACCESS_TOKEN`.
