@@ -39,8 +39,11 @@ impl MigrationDatabaseLock {
 	pub(crate) fn close(mut self) -> Result<(), Error> {
 		if self.remove_file {
 			self.remove_file = false;
-			fs::remove_file(&self.path)
-				.map_err(|error| migration_error("release", error))?;
+			match fs::remove_file(&self.path) {
+				Ok(()) => {}
+				Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+				Err(error) => return Err(migration_error("release", error)),
+			}
 		}
 		drop(self.file.take());
 		Ok(())

@@ -62,6 +62,10 @@ impl Store {
 			}
 			return Err(error);
 		}
+		if let Err(error) = crate::app_files::private_file(&paths.data) {
+			pool.close().await;
+			return Err(open_error(error));
+		}
 		let warning = retire_legacy_files(&paths).err();
 		Ok(Self {
 			pool,

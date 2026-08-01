@@ -273,6 +273,10 @@ async fn main() -> ExitCode {
 		);
 		return ExitCode::SUCCESS;
 	}
+	if let Err(error) = app_files::prepare_for_command().await {
+		ui::failure(error.render(debug));
+		return ExitCode::FAILURE;
+	}
 	if owner_route == OwnerRoute::TelemetryControl {
 		let Some(Commands::Telemetry { command }) = args.command.as_ref()
 		else {

@@ -8,6 +8,7 @@ use std::{
 use sqlx::{SqlitePool, migrate::Migrator};
 
 use crate::{
+	app_files,
 	error::Error,
 	sqlite::{self, Durability, FailureContext, MigrationError, OpenMode},
 };
@@ -139,6 +140,17 @@ async fn open_database(
 		pool.close().await;
 		drop(cache_lock);
 		return Err(failure);
+	}
+	if let Err(error) = app_files::private_file(&path) {
+		pool.close().await;
+		drop(cache_lock);
+		return Err(OpenFailure {
+			error: Error::with_debug(
+				"Could not secure the local cache database.",
+				error,
+			),
+			rebuildable: false,
+		});
 	}
 	Ok(Database {
 		pool,

@@ -47,15 +47,10 @@ impl Paths {
 	}
 
 	fn discover() -> Result<Self, Error> {
-		let directories = app_files::directories().ok_or_else(|| {
+		let data_directory = app_files::data_directory().ok_or_else(|| {
 			Error::new("Could not resolve the local telemetry directory.")
 		})?;
-		let data_directory = directories.data_local_dir();
-		Ok(Self {
-			data: data_directory.join("telemetry.sqlite"),
-			lock: data_directory.join("telemetry.lock"),
-			disabled: directories.config_dir().join("telemetry-disabled"),
-		})
+		Ok(Self::at(data_directory))
 	}
 }
 
