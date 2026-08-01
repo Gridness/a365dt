@@ -1,8 +1,11 @@
 use pretty_assertions::assert_eq;
 use semver::Version;
 
-use super::{Check, Report, Section, Status, version_check};
-use crate::{error::Error, startup::Update};
+use super::{Check, Report, Section, Status, preference_check, version_check};
+use crate::{
+	error::Error, preferences::Inspection as PreferencesInspection,
+	startup::Update,
+};
 
 #[test]
 fn reports_the_worst_health_status() {
@@ -50,5 +53,24 @@ fn reports_current_available_and_unknown_versions() {
 			)
 			.remedy("Check the network or GitHub status, then retry"),
 		]
+	);
+}
+
+#[test]
+fn invalid_download_preferences_make_doctor_unhealthy() {
+	let error = Error::new("unknown field `job`");
+
+	assert_eq!(
+		preference_check(
+			&Ok(PreferencesInspection::Invalid {
+				path: "/home/me/.a365dt/config.toml".into(),
+				error: error.clone(),
+			}),
+			false,
+		),
+		Check::new("Download preferences", error.message(), Status::Error)
+			.remedy(
+				"Run `a365dt config` to repair or `a365dt config reset` to remove it",
+			)
 	);
 }

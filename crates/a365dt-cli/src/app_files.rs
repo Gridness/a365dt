@@ -121,6 +121,12 @@ impl LockedMigration {
 		let staging = staging_paths(&self.migration.application_home)?;
 		purge_directories(std::slice::from_ref(&staging.root))?;
 		create_paths(&staging)?;
+		let config = self.migration.application_home.root.join("config.toml");
+		match fs::copy(&config, staging.root.join("config.toml")) {
+			Ok(_) => private_file(&staging.root.join("config.toml"))?,
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error),
+		}
 		for (source, disposition) in self.migration.files {
 			let Some(destination) = disposition.destination(&staging) else {
 				continue;
@@ -179,25 +185,16 @@ impl StagedMigration {
 	}
 
 	fn commit(mut self) -> io::Result<Paths> {
-		for directory in [
-			&self.application_home.cache,
-			&self.application_home.data,
-			&self.application_home.root,
-		] {
-			match fs::remove_dir(directory) {
-				Ok(()) => {}
-				Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-				Err(error) => return Err(error),
-			}
-		}
-		let tombstones = migration::move_to_tombstones(&self.legacy_roots)?;
+		let mut roots = self.legacy_roots.clone();
+		roots.push(self.application_home.root.clone());
+		let tombstones = migration::move_to_tombstones(&roots)?;
 		if let Err(error) =
 			fs::rename(&self.staging.root, &self.application_home.root)
 		{
 			return match migration::restore_tombstones(&tombstones) {
 				Ok(()) => Err(error),
 				Err(restore_error) => Err(io::Error::other(format!(
-					"{error}; could not restore legacy application files: {restore_error}"
+					"{error}; could not restore application files: {restore_error}"
 				))),
 			};
 		}
@@ -372,7 +369,7 @@ fn staging_paths(paths: &Paths) -> io::Result<Paths> {
 		.and_then(|name| name.to_str())
 		.ok_or_else(|| io::Error::other("application home has no file name"))?;
 	Ok(Paths::at(
-		paths.root.with_file_name(format!("{name}.migrating")),
+		paths.root.with_file_name(format!("{name}.staging")),
 	))
 }
 
@@ -384,7 +381,9 @@ fn prepare() -> io::Result<Option<Preparation>> {
 		.map(|directories| application_roots(&directories))
 		.unwrap_or_default();
 	let migration_lock = migration::MigrationLock::acquire(&paths)?;
-	migration::recover_tombstones(&paths, &legacy_roots)?;
+	let mut recovery_roots = legacy_roots.clone();
+	recovery_roots.push(paths.root.clone());
+	migration::recover_tombstones(&paths, &recovery_roots)?;
 	let preparation = prepare_at(paths, &legacy_roots)?;
 	Ok(Some(match preparation {
 		Preparation::Ready => Preparation::Ready,
@@ -403,6 +402,10 @@ fn paths() -> Option<Paths> {
 
 pub(crate) fn cache_directory() -> Option<PathBuf> {
 	paths().map(|paths| paths.cache)
+}
+
+pub(crate) fn application_home() -> Option<PathBuf> {
+	paths().map(|paths| paths.root)
 }
 
 pub(crate) fn data_directory() -> Option<PathBuf> {
@@ -424,6 +427,7 @@ pub(crate) fn purge() -> io::Result<()> {
 		.collect::<io::Result<Vec<_>>>()?;
 	roots.extend(tombstones);
 	if let Some(paths) = paths {
+		roots.push(migration::tombstone_path(&paths.root)?);
 		roots.push(staging_paths(&paths)?.root);
 		roots.push(paths.root);
 	}

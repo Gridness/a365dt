@@ -90,6 +90,27 @@ Choose an output directory and the number of concurrent downloads:
 a365dt --output ~/Videos --jobs 8 "Frieren"
 ```
 
+Save these choices as Download preferences with the interactive configurator:
+
+```console
+a365dt config
+a365dt config show
+a365dt config reset
+```
+
+The same preferences can be edited directly in `~/.a365dt/config.toml`:
+
+```toml
+output = "~/Videos"
+jobs = 8
+mux = true
+```
+
+Every key is optional. Explicit command-line options override the file;
+`mux = false` keeps the existing mux confirmation. Output paths must be
+absolute or start with `~/`, and values above 10 jobs warn about possible rate
+limits without preventing the download.
+
 On first use, `a365dt` opens Anime365 so you can obtain an access token. For
 non-interactive use, provide it through `ANIME365_ACCESS_TOKEN`.
 
@@ -98,6 +119,8 @@ Other commands:
 ```console
 a365dt completions zsh
 a365dt cache prune
+a365dt config show
+a365dt config reset --yes
 a365dt doctor
 a365dt doctor --debug
 a365dt purge
@@ -116,8 +139,9 @@ is available.
 `purge` removes a365dt cache, configuration, local data, and the saved macOS
 Keychain token. It does not remove downloaded media or the installed program.
 
-a365dt keeps release application files under `~/.a365dt`, with cache files in
-`cache/` and local telemetry in `data/`. Development builds use
+a365dt keeps release application files under `~/.a365dt`, with Download
+preferences in `config.toml`, cache files in `cache/`, and local telemetry in
+`data/`. Development builds use
 `~/.a365dt-dev` instead. When upgrading from an older version, an interactive
 prompt moves existing files from the former OS-specific locations before a
 stateful command runs; `purge`, completion generation, help, and version output
@@ -136,12 +160,12 @@ catalogue when search began. Download success includes both downloaded and
 previously verified, skipped Episodes.
 
 `a365dt stats` shows local cache, performance, download, and command usage
-statistics. `a365dt doctor` checks Anime365 reachability and latency, cache
-freshness, local telemetry health, build details, and whether a newer stable
-a365dt release is available. `--debug` adds paths, raw per-operation latency,
-collection dates, update-check failures, and a local telemetry-overhead
-benchmark. Statuses use `✓`, `●`, `○`, and `✗`; unavailable fields include the
-command or action needed to restore them.
+statistics. `a365dt doctor` checks Anime365 reachability and latency, Download
+preferences, cache freshness, local telemetry health, build details, and
+whether a newer stable a365dt release is available. `--debug` adds paths, raw
+per-operation latency, collection dates, update-check failures, and a local
+telemetry-overhead benchmark. Statuses use `✓`, `●`, `○`, and `✗`; unavailable
+fields include the command or action needed to restore them.
 
 ## Development
 

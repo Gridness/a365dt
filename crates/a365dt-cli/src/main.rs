@@ -7,6 +7,7 @@ mod doctor;
 mod download;
 mod error;
 mod poster;
+mod preferences;
 mod search;
 mod select;
 mod series_search;
@@ -43,6 +44,7 @@ use crate::{
 	command_line::OwnerRoute,
 	download::{Job, Status},
 	error::Error,
+	preferences::ConfigCommand,
 	select::Release,
 };
 
@@ -68,11 +70,13 @@ struct Args {
 	)]
 	forced_query: Vec<String>,
 
-	#[arg(short, long, default_value = ".", value_name = "DIR")]
-	output: PathBuf,
+	/// Override the configured output directory for this Invocation.
+	#[arg(short, long, value_name = "DIR")]
+	output: Option<PathBuf>,
 
-	#[arg(short, long, default_value = "4")]
-	jobs: NonZeroUsize,
+	/// Override the configured number of concurrent downloads for this Invocation.
+	#[arg(short, long)]
+	jobs: Option<NonZeroUsize>,
 
 	/// Mux separate ASS subtitles into MKV without confirmation.
 	#[arg(
@@ -100,7 +104,13 @@ enum Commands {
 		arguments: Vec<String>,
 	},
 
-	/// Check a365dt, Anime365, cache, and telemetry health.
+	/// Configure persistent Download preferences.
+	Config {
+		#[command(subcommand)]
+		command: Option<ConfigCommand>,
+	},
+
+	/// Check a365dt, Anime365, preferences, cache, and telemetry health.
 	Doctor {
 		#[arg(value_name = "QUERY", num_args = 0.., hide = true)]
 		query: Vec<String>,
@@ -280,6 +290,33 @@ async fn main() -> ExitCode {
 		ui::failure(error.render(debug));
 		return ExitCode::FAILURE;
 	}
+	if owner_route == OwnerRoute::PreferencesOnly {
+		let Some(Commands::Config { command }) = args.command.as_ref() else {
+			unreachable!("the preferences route contains a config command")
+		};
+		let result =
+			preferences::Store::discover().and_then(|store| match command {
+				None => store.configure(),
+				Some(ConfigCommand::Show { .. }) => store.show(),
+				Some(ConfigCommand::Reset { yes, .. }) => {
+					store.reset_command(if *yes {
+						preferences::ResetPermission::Preauthorized
+					} else {
+						preferences::ResetPermission::Ask
+					})
+				}
+				Some(ConfigCommand::Query(_)) => {
+					unreachable!("config queries return to title search")
+				}
+			});
+		return match result {
+			Ok(()) => ExitCode::SUCCESS,
+			Err(error) => {
+				ui::failure(error.render(debug));
+				ExitCode::FAILURE
+			}
+		};
+	}
 	if owner_route == OwnerRoute::TelemetryControl {
 		let Some(Commands::Telemetry { command }) = args.command.as_ref()
 		else {
@@ -364,6 +401,7 @@ async fn main() -> ExitCode {
 		}
 		OwnerRoute::Purge
 		| OwnerRoute::Stateless
+		| OwnerRoute::PreferencesOnly
 		| OwnerRoute::TelemetryControl => {
 			unreachable!("early-return routes do not open ordinary owners")
 		}
@@ -446,6 +484,9 @@ fn telemetry_command(args: &Args) -> telemetry::Command {
 		Some(Commands::Completions { .. }) => {
 			unreachable!("completion generation returns before telemetry")
 		}
+		Some(Commands::Config { .. }) => {
+			unreachable!("configuration commands return before telemetry")
+		}
 		Some(Commands::Doctor { .. }) => telemetry::Command::Doctor,
 		Some(Commands::Purge { .. }) => {
 			unreachable!("purge returns before recording")
@@ -485,6 +526,13 @@ async fn run(
 	telemetry: &telemetry::Recorder,
 ) -> Result<ExitCode, Error> {
 	ui::heading("a365dt  ◆  Anime365 downloader");
+	let preference_store = preferences::Store::discover()?;
+	let preferences = preference_store.load(preferences::Overrides {
+		output: args.output.clone(),
+		jobs: args.jobs,
+		mux: args.mux,
+	})?;
+	preferences::warn_if_high_concurrency(&preferences);
 	startup::show(store).await;
 	let access_token = auth::access_token()?;
 	let api =
@@ -513,7 +561,7 @@ async fn run(
 	));
 
 	ui::note("Loading available media…");
-	let releases = fetch_embeds(&api, releases, args.jobs.get()).await?;
+	let releases = fetch_embeds(&api, releases, preferences.jobs.get()).await?;
 	let planned = select::choose_resolutions(releases)?;
 	let separate_subtitles = planned
 		.iter()
@@ -526,7 +574,7 @@ async fn run(
 		));
 	}
 	let mux = if separate_subtitles > 0 && ffmpeg_available().await {
-		args.mux
+		preferences.mux
 			|| ui::confirm(
 				"Mux separate ASS subtitles into MKV after download?",
 				false,
@@ -540,7 +588,8 @@ async fn run(
 		false
 	};
 
-	let directory = args.output.join(download::sanitize(&series.title, 100));
+	let output = preference_store.prepare_output(&preferences.output)?;
+	let directory = output.join(download::sanitize(&series.title, 100));
 	fs::create_dir_all(&directory).await.map_err(|error| {
 		Error::with_debug(
 			format!(
@@ -557,9 +606,14 @@ async fn run(
 		.collect();
 	let (cancel, cancellation) = watch::channel(false);
 	*active_download.lock().unwrap() = Some(cancel);
-	let summary =
-		download::run(api, jobs, args.jobs.get(), args.debug, cancellation)
-			.await;
+	let summary = download::run(
+		api,
+		jobs,
+		preferences.jobs.get(),
+		args.debug,
+		cancellation,
+	)
+	.await;
 	*active_download.lock().unwrap() = None;
 	telemetry.record_download(&series, &summary);
 	print_summary(&summary, &directory, args.debug);

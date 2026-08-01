@@ -5,6 +5,7 @@ use indicatif::{HumanBytes, HumanDuration};
 use crate::{
 	cache::{Inspection as CacheInspection, MAX_AGE, Store},
 	error::Error,
+	preferences::{self, Inspection as PreferencesInspection},
 	startup::{self, Update},
 	telemetry::{self, PerformanceMetric, Snapshot, Writer as TelemetryWriter},
 };
@@ -21,6 +22,8 @@ pub async fn run(
 	telemetry_writer: &TelemetryWriter,
 	debug: bool,
 ) -> ExitCode {
+	let preferences =
+		preferences::Store::discover().map(|store| store.inspect());
 	let (server, update, cache) =
 		tokio::join!(server::probe(), startup::check(store), store.inspect());
 	let telemetry = telemetry_writer.snapshot().await;
@@ -28,7 +31,13 @@ pub async fn run(
 		Section {
 			title: "Health",
 			debug: false,
-			checks: health_checks(&server, &cache, &telemetry, debug),
+			checks: health_checks(
+				&server,
+				&cache,
+				&telemetry,
+				&preferences,
+				debug,
+			),
 		},
 		Section {
 			title: "Build",
@@ -46,6 +55,7 @@ pub async fn run(
 				&telemetry,
 				&update,
 				telemetry_writer,
+				&preferences,
 			),
 		});
 	}
@@ -58,6 +68,7 @@ fn health_checks(
 	server: &ServerProbe,
 	cache: &CacheInspection,
 	snapshot: &Result<Snapshot, Error>,
+	preferences: &Result<PreferencesInspection, Error>,
 	debug: bool,
 ) -> Vec<Check> {
 	let server = match server.status {
@@ -105,7 +116,34 @@ fn health_checks(
 				.remedy("Run `a365dt doctor --debug` to inspect its database")
 		}
 	};
-	vec![server, cache, telemetry]
+	let preferences = preference_check(preferences, debug);
+	vec![server, cache, telemetry, preferences]
+}
+
+fn preference_check(
+	inspection: &Result<PreferencesInspection, Error>,
+	debug: bool,
+) -> Check {
+	match inspection {
+		Ok(PreferencesInspection::Missing { .. }) => Check::new(
+			"Download preferences",
+			"Built-in defaults",
+			Status::Info,
+		),
+		Ok(PreferencesInspection::Ready { .. }) => {
+			Check::new("Download preferences", "Configured", Status::Healthy)
+		}
+		Ok(PreferencesInspection::Invalid { error, .. })
+		| Ok(PreferencesInspection::Unreadable { error, .. })
+		| Err(error) => Check::new(
+			"Download preferences",
+			error.render(debug),
+			Status::Error,
+		)
+		.remedy(
+			"Run `a365dt config` to repair or `a365dt config reset` to remove it",
+		),
+	}
 }
 
 fn build_checks(update: &Result<Option<Update>, Error>) -> Vec<Check> {
@@ -150,6 +188,7 @@ fn debug_checks(
 	snapshot: &Result<Snapshot, Error>,
 	update: &Result<Option<Update>, Error>,
 	telemetry: &TelemetryWriter,
+	preferences: &Result<PreferencesInspection, Error>,
 ) -> Vec<Check> {
 	let mut checks = vec![
 		Check::new("Server endpoint", server::URL, Status::Info),
@@ -181,6 +220,7 @@ fn debug_checks(
 			Status::Info,
 		));
 	}
+	checks.extend(preference_debug_checks(preferences));
 	let (cache_path, cache_detail) = match cache {
 		CacheInspection::Ready {
 			path, age, bytes, ..
@@ -333,6 +373,44 @@ fn debug_checks(
 		},
 	));
 	checks
+}
+
+fn preference_debug_checks(
+	inspection: &Result<PreferencesInspection, Error>,
+) -> Vec<Check> {
+	match inspection {
+		Ok(PreferencesInspection::Missing { path, snapshot })
+		| Ok(PreferencesInspection::Ready { path, snapshot }) => vec![
+			Check::new("Config file", path.display().to_string(), Status::Info),
+			Check::new(
+				"Configured output",
+				snapshot.preferences.output.display().to_string(),
+				Status::Info,
+			),
+			Check::new(
+				"Configured jobs",
+				snapshot.preferences.jobs.to_string(),
+				Status::Info,
+			),
+			Check::new(
+				"Configured mux",
+				if snapshot.preferences.mux {
+					"Without confirmation"
+				} else {
+					"Ask"
+				},
+				Status::Info,
+			),
+		],
+		Ok(PreferencesInspection::Invalid { path, error })
+		| Ok(PreferencesInspection::Unreadable { path, error }) => vec![
+			Check::new("Config file", path.display().to_string(), Status::Info),
+			Check::new("Config detail", error.message(), Status::Info),
+		],
+		Err(error) => {
+			vec![Check::new("Config detail", error.message(), Status::Info)]
+		}
+	}
 }
 
 fn performance_detail(metric: &PerformanceMetric) -> String {

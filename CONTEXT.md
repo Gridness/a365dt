@@ -5,8 +5,12 @@ a365dt downloads user-selected Anime365 releases while keeping episode and trans
 ## Language
 
 **Application home**:
-The build-specific, user-scoped directory that owns a365dt's local cache and telemetry state: `~/.a365dt` for release builds and `~/.a365dt-dev` for development builds. Cache files live under `cache/` and telemetry files under `data/`; downloaded media and OS-managed credentials are outside it.
+The build-specific, user-scoped directory that owns a365dt's Download preferences, local cache, and telemetry state: `~/.a365dt` for release builds and `~/.a365dt-dev` for development builds. Download preferences live in `config.toml`, cache files under `cache/`, and telemetry files under `data/`; downloaded media and OS-managed credentials are outside it.
 _Avoid_: OS application directory, data directory
+
+**Download preferences**:
+User-defined defaults for the output directory, concurrent download count, and whether to mux subtitles without confirmation. Any omitted preference inherits its built-in default; `a365dt config` edits all effective values interactively, `config show` displays them, and `config reset` restores built-in defaults. They are stored in the Application home's `config.toml`; explicit Invocation choices take precedence when present, and disabling automatic muxing preserves the existing prompt.
+_Avoid_: Settings, options
 
 **Interactive session**:
 An a365dt run in which a person searches for a Series and makes download choices. Help, version reporting, shell-completion generation, and maintenance commands are not Interactive sessions.
