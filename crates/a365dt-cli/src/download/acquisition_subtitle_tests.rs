@@ -192,7 +192,7 @@ async fn mp4_mux_preserves_existing_separate_files_on_failure() {
 	let mut release = release();
 	release.subtitle_url = Some(SUBTITLE_URL.into());
 	let stem = "E01 [voice-ru] [Test] [1080p]";
-	tokio::fs::write(directory.path(&format!("{stem}.mp4")), b"raw!")
+	tokio::fs::write(directory.path(&format!("{stem}.video.mp4")), b"raw!")
 		.await
 		.unwrap();
 	let adapter = Arc::new(ScriptedAdapter::new([
