@@ -81,6 +81,27 @@ fn stages_and_commits_legacy_application_state() {
 }
 
 #[test]
+fn preserves_configuration_during_legacy_application_state_migration() {
+	let fixture = Fixture::new("configuration");
+	fs::create_dir_all(&fixture.paths.root).unwrap();
+	fs::write(fixture.paths.root.join("config.toml"), b"jobs = 8\n").unwrap();
+
+	fixture
+		.migration()
+		.lock()
+		.unwrap()
+		.stage()
+		.unwrap()
+		.commit()
+		.unwrap();
+
+	assert_eq!(
+		fs::read(fixture.paths.root.join("config.toml")).unwrap(),
+		b"jobs = 8\n"
+	);
+}
+
+#[test]
 fn rejects_unrecognized_legacy_files_without_creating_the_home() {
 	let fixture = Fixture::new("unknown");
 	let unknown = fixture.legacy.join("mystery.db");

@@ -1,13 +1,39 @@
-use std::sync::Mutex;
+use std::{num::NonZeroUsize, sync::Mutex};
 
 use clap::Parser;
 use pretty_assertions::assert_eq;
 use tokio::sync::watch;
 
 use super::{
-	Args, CacheCommand, Commands, TelemetryCommand, cancel_download,
+	Args, CacheCommand, Commands, ConfigCommand, TelemetryCommand,
+	cancel_download,
 	command_line::{OwnerRoute, owner_route, route_title_query},
 };
+
+#[test]
+fn parses_configuration_commands() {
+	let interactive = Args::try_parse_from(["a365dt", "config"]).unwrap();
+	let show = Args::try_parse_from(["a365dt", "config", "show"]).unwrap();
+	let reset =
+		Args::try_parse_from(["a365dt", "config", "reset", "--yes"]).unwrap();
+
+	assert!(matches!(
+		interactive.command,
+		Some(Commands::Config { command: None })
+	));
+	assert!(matches!(
+		show.command,
+		Some(Commands::Config {
+			command: Some(ConfigCommand::Show { query })
+		}) if query.is_empty()
+	));
+	assert!(matches!(
+		reset.command,
+		Some(Commands::Config {
+			command: Some(ConfigCommand::Reset { yes: true, query })
+		}) if query.is_empty()
+	));
+}
 
 #[test]
 fn routes_interrupts_to_active_downloads() {
@@ -45,6 +71,22 @@ fn parses_mux_after_query_and_its_aliases() {
 
 		assert_eq!((args.query, args.mux), (vec!["Frieren".to_owned()], true));
 	}
+}
+
+#[test]
+fn parses_explicit_download_preference_overrides() {
+	let args = Args::try_parse_from([
+		"a365dt", "--output", "Videos", "--jobs", "8", "Frieren",
+	])
+	.unwrap();
+
+	assert_eq!(
+		(args.output, args.jobs),
+		(
+			Some(std::path::PathBuf::from("Videos")),
+			NonZeroUsize::new(8),
+		)
+	);
 }
 
 #[test]
@@ -132,6 +174,8 @@ fn routes_unknown_command_arguments_through_title_search() {
 		&["a365dt", "cache", "prune", "this"][..],
 		&["a365dt", "completions", "this"][..],
 		&["a365dt", "completions", "zsh", "this"][..],
+		&["a365dt", "config", "this"][..],
+		&["a365dt", "config", "show", "this"][..],
 		&["a365dt", "doctor", "elise"][..],
 		&["a365dt", "stats", "this"][..],
 		&["a365dt", "telemetry", "this"][..],
@@ -233,6 +277,11 @@ fn routes_commands_to_only_their_required_owners() {
 			OwnerRoute::TelemetryControl,
 		),
 		(&["a365dt", "completions", "zsh"][..], OwnerRoute::Stateless),
+		(&["a365dt", "config"][..], OwnerRoute::PreferencesOnly),
+		(
+			&["a365dt", "config", "show"][..],
+			OwnerRoute::PreferencesOnly,
+		),
 		(
 			&["a365dt", "cache", "prune", "--yes"][..],
 			OwnerRoute::CachePruneAndTelemetry,
