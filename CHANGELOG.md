@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/Gridness/a365dt/compare/v2.0.0...v2.1.0) (2026-08-01)
+
+
+### Features
+
+* **cli:** add persistent download preferences ([#90](https://github.com/Gridness/a365dt/issues/90)) ([3e51065](https://github.com/Gridness/a365dt/commit/3e510655b5e11cbcd08261b9eef7a85796f63a6e))
+
 ## [2.0.0](https://github.com/Gridness/a365dt/compare/v1.1.0...v2.0.0) (2026-08-01)
 
 
