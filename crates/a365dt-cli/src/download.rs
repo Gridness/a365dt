@@ -395,11 +395,21 @@ impl Bars {
 				.apply_to(format!(
 					"{} • {}",
 					outcome.episode,
-					outcome.detail.render(self.debug)
+					self.render_detail(outcome)
 				))
 				.to_string(),
 		);
 		self.completed.lock().unwrap().push(bar.clone());
+	}
+
+	fn render_detail(&self, outcome: &Outcome) -> String {
+		match outcome.status {
+			Status::Downloaded => "Completed".into(),
+			Status::Skipped
+			| Status::Failed
+			| Status::MuxFailed
+			| Status::Interrupted => outcome.detail.render(self.debug),
+		}
 	}
 
 	fn line(&self, outcome: &Outcome) {
@@ -421,7 +431,7 @@ impl Bars {
 				})
 				.bold(),
 			outcome.episode,
-			outcome.detail.render(self.debug)
+			self.render_detail(outcome)
 		);
 		self.message(&line);
 	}

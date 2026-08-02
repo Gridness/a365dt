@@ -86,10 +86,10 @@ fn leaves_completed_download_in_the_batch_as_a_green_checked_row() {
 			lines.next(),
 			formatted.lines().nth(1).is_some_and(|line| {
 				line.starts_with(
-					"\u{1b}[32m✓\u{1b}[m \u{1b}[32m1 серия • episode.mp4\u{1b}[m",
+					"\u{1b}[32m✓\u{1b}[m \u{1b}[32m1 серия • Completed\u{1b}[m",
 				)
 			}),
 		),
-		(true, Some("✓ 1 серия • episode.mp4"), None, true)
+		(true, Some("✓ 1 серия • Completed"), None, true)
 	);
 }
