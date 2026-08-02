@@ -2,11 +2,11 @@ use std::{
 	collections::VecDeque,
 	io::IsTerminal,
 	path::PathBuf,
-	sync::Arc,
+	sync::{Arc, Mutex},
 	time::{Duration, Instant},
 };
 
-use console::style;
+use console::{Style, style};
 use indicatif::{
 	MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
 };
@@ -56,6 +56,8 @@ pub struct Summary {
 struct Bars {
 	multi: MultiProgress,
 	overall: ProgressBar,
+	completed: Mutex<Vec<ProgressBar>>,
+	completed_style: Style,
 	debug: bool,
 }
 
@@ -208,10 +210,7 @@ async fn download_job<A: Adapter>(
 		&video,
 		&subtitle,
 		&bar,
-		|| {
-			bar.finish_and_clear();
-			bars.spinner(&format!("{episode} • ASS"))
-		},
+		|| bars.spinner(&format!("{episode} • ASS")),
 		&mut cancel,
 	)
 	.await
@@ -246,12 +245,12 @@ async fn download_job<A: Adapter>(
 	};
 	let bytes = acquisition.bytes;
 	let has_subtitle_asset = acquisition.has_subtitle_asset;
-	bar.finish_and_clear();
 	if job.mux && has_subtitle_asset {
 		let mux_bar = bars.spinner(&format!("{episode} • muxing"));
 		let result = mux::run(&video, &subtitle, &mkv).await;
 		mux_bar.finish_and_clear();
 		if let Err(error) = result {
+			bar.finish_and_clear();
 			return Outcome {
 				episode,
 				status: Status::MuxFailed,
@@ -259,14 +258,16 @@ async fn download_job<A: Adapter>(
 				detail: error,
 			};
 		}
-		return Outcome {
+		let outcome = Outcome {
 			episode,
 			status: Status::Downloaded,
 			bytes,
 			detail: format!("{}", mkv.display()).into(),
 		};
+		bars.complete(&bar, &outcome);
+		return outcome;
 	}
-	Outcome {
+	let outcome = Outcome {
 		episode,
 		status: if video_skipped {
 			Status::Skipped
@@ -275,7 +276,13 @@ async fn download_job<A: Adapter>(
 		},
 		bytes,
 		detail: format!("{}", video.display()).into(),
+	};
+	if outcome.status == Status::Downloaded {
+		bars.complete(&bar, &outcome);
+	} else {
+		bar.finish_and_clear();
 	}
+	outcome
 }
 
 pub fn sanitize(input: &str, max: usize) -> String {
@@ -348,6 +355,8 @@ impl Bars {
 		Self {
 			multi,
 			overall,
+			completed: Mutex::new(Vec::new()),
+			completed_style: Style::new().green().for_stderr(),
 			debug,
 		}
 	}
@@ -371,8 +380,31 @@ impl Bars {
 		bar
 	}
 
+	fn complete(&self, bar: &ProgressBar, outcome: &Outcome) {
+		if self.multi.is_hidden() {
+			bar.finish_and_clear();
+			return;
+		}
+		bar.set_style(
+			ProgressStyle::with_template("{prefix} {msg}")
+				.expect("valid style"),
+		);
+		bar.set_prefix(self.completed_style.apply_to("✓").to_string());
+		bar.finish_with_message(
+			self.completed_style
+				.apply_to(format!(
+					"{} • {}",
+					outcome.episode,
+					outcome.detail.render(self.debug)
+				))
+				.to_string(),
+		);
+		self.completed.lock().unwrap().push(bar.clone());
+	}
+
 	fn line(&self, outcome: &Outcome) {
 		let (icon, color) = match outcome.status {
+			Status::Downloaded if !self.multi.is_hidden() => return,
 			Status::Downloaded => ("✓", "green"),
 			Status::Skipped => ("↷", "cyan"),
 			Status::Failed | Status::MuxFailed => ("✗", "red"),
