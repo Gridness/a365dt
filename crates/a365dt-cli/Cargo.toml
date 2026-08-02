@@ -38,6 +38,7 @@ security-framework.workspace = true
 
 [dev-dependencies]
 divan.workspace = true
+indicatif = { workspace = true, features = ["in_memory"] }
 pretty_assertions.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
