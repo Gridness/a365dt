@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/Gridness/a365dt/compare/v2.3.0...v2.4.0) (2026-08-02)
+
+
+### Features
+
+* **cli:** retain completed download bars ([#96](https://github.com/Gridness/a365dt/issues/96)) ([033bfad](https://github.com/Gridness/a365dt/commit/033bfad16ed0045e363146b9fa89e542365749a4))
+
 ## [2.3.0](https://github.com/Gridness/a365dt/compare/v2.2.0...v2.3.0) (2026-08-01)
 
 
